@@ -25,7 +25,7 @@ class SendTests(unittest.TestCase):
             notify.send(**send_kwargs)
             return mock_run
 
-    def test_terminal_notifier_with_url_includes_open_flag(self):
+    def test_terminal_notifier_with_url_includes_execute_open(self):
         mock_run = self._run_send(
             tn_path="/opt/homebrew/bin/terminal-notifier",
             osa_path="/usr/bin/osascript",
@@ -36,12 +36,31 @@ class SendTests(unittest.TestCase):
         mock_run.assert_called_once()
         args = mock_run.call_args.args[0]
         self.assertEqual(args[0], "/opt/homebrew/bin/terminal-notifier")
-        self.assertIn("-open", args)
-        self.assertEqual(args[args.index("-open") + 1], "http://localhost:8501")
+        self.assertIn("-execute", args)
+        self.assertEqual(
+            args[args.index("-execute") + 1], "open http://localhost:8501"
+        )
+        self.assertNotIn("-open", args)
         self.assertIn("-title", args)
         self.assertEqual(args[args.index("-title") + 1], notify.APP_TITLE)
 
-    def test_terminal_notifier_without_url_omits_open_flag(self):
+    def test_terminal_notifier_shell_quotes_url(self):
+        mock_run = self._run_send(
+            tn_path="/opt/homebrew/bin/terminal-notifier",
+            osa_path="/usr/bin/osascript",
+            title="Shipped",
+            message="Widget",
+            url="http://localhost:8501/pkg?x=1&y=2",
+        )
+        args = mock_run.call_args.args[0]
+        # Shell metacharacters in the URL must be quoted so the click handler
+        # doesn't treat `&` as a background operator.
+        self.assertEqual(
+            args[args.index("-execute") + 1],
+            "open 'http://localhost:8501/pkg?x=1&y=2'",
+        )
+
+    def test_terminal_notifier_without_url_omits_execute(self):
         mock_run = self._run_send(
             tn_path="/opt/homebrew/bin/terminal-notifier",
             osa_path="/usr/bin/osascript",
@@ -49,6 +68,7 @@ class SendTests(unittest.TestCase):
             message="Widget",
         )
         args = mock_run.call_args.args[0]
+        self.assertNotIn("-execute", args)
         self.assertNotIn("-open", args)
 
     def test_osascript_fallback_ignores_url(self):

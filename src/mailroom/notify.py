@@ -8,6 +8,7 @@ but no click action).
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -34,7 +35,8 @@ def send(title: str, message: str, url: str | None = None) -> None:
     if tn:
         args = [tn, "-title", APP_TITLE, "-subtitle", title, "-message", message, "-sound", "default"]
         if url:
-            args += ["-open", url]
+            # -execute runs through a shell; -open is unreliable on recent macOS.
+            args += ["-execute", f"open {shlex.quote(url)}"]
         subprocess.run(args, check=False)
         return
 
