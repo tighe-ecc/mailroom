@@ -1,0 +1,21 @@
+{# Stats tiles. hx-swap-oob makes this update alongside the main table swap. #}
+<section id="stats-region" hx-swap-oob="true"
+         class="stats stats-horizontal shadow-sm bg-base-100 w-full mb-8 border border-base-300">
+  <div class="stat">
+    <div class="stat-title">Pre-shipment</div>
+    <div class="stat-value text-base-content/60">{{ pre_shipment_count }}</div>
+    <div class="stat-desc">ordered / confirmed</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">In transit</div>
+    <div class="stat-value text-info">{{ counts.get('in_transit', 0) + counts.get('pre_transit', 0) }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Out for delivery</div>
+    <div class="stat-value text-warning">{{ counts.get('out_for_delivery', 0) }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">Delivered</div>
+    <div class="stat-value text-success">{{ counts.get('delivered', 0) }}</div>
+  </div>
+</section>

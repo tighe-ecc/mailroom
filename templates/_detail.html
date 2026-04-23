@@ -1,0 +1,169 @@
+{# Detail + inline-edit form. Swapped into #detail-content; modal is opened by the caller. #}
+<form id="detail-form"
+      hx-post="/packages/{{ pkg.id }}/update"
+      hx-target="#detail-content"
+      hx-swap="innerHTML"
+      onkeydown="if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); document.getElementById('detail-save-btn').click(); }"
+      oninput="document.getElementById('detail-save-btn').classList.remove('invisible')">
+  <div class="mb-4">
+    <input name="description"
+           value="{{ pkg.description or '' }}"
+           ondblclick="this.focus(); this.select()"
+           placeholder="(no description)"
+           class="detail-inline text-lg font-semibold w-full" />
+    <div class="mt-2 flex items-center gap-3">
+      <input type="hidden" name="status" id="status-input" value="{{ pkg.status or '' }}" />
+      <details class="dropdown" id="status-dropdown">
+        <summary id="status-summary"
+                 class="badge badge-{{ pkg.status|status_class }} badge-sm cursor-pointer list-none">
+          {{ pkg.status|display_status }}
+        </summary>
+        <ul class="dropdown-content menu bg-base-100 rounded-box shadow-lg z-20 p-1 mt-2 min-w-[180px] border border-base-300">
+          {% for s in ['ordered', 'confirmed', 'in_fulfillment', 'pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'available_for_pickup', 'return_to_sender', 'failure', 'cancelled', 'error', 'unknown'] %}
+          <li>
+            <a class="py-1 px-2" onclick="pickStatus('{{ s }}', '{{ s|display_status }}', '{{ s|status_class }}')">
+              <span class="badge badge-{{ s|status_class }} badge-sm">{{ s|display_status }}</span>
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      <input name="vendor"
+             value="{{ pkg.vendor or '' }}"
+             ondblclick="this.focus(); this.select()"
+             placeholder="vendor"
+             class="detail-inline text-sm flex-1 min-w-0" />
+    </div>
+    <script>
+    function pickStatus(value, label, cls) {
+      const form = document.getElementById('detail-form');
+      form.querySelector('#status-input').value = value;
+      const summary = form.querySelector('#status-summary');
+      summary.textContent = label;
+      summary.className = `badge badge-${cls} badge-sm cursor-pointer list-none`;
+      document.getElementById('status-dropdown').removeAttribute('open');
+      document.getElementById('detail-save-btn').classList.remove('invisible');
+    }
+    </script>
+  </div>
+
+  <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Order #</div>
+      <input name="order_number"
+             value="{{ pkg.order_number or '' }}"
+             ondblclick="this.focus(); this.select()"
+             placeholder="—"
+             class="detail-inline mono w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">PO #</div>
+      <input name="po_number"
+             value="{{ pkg.po_number or '' }}"
+             ondblclick="this.focus(); this.select()"
+             placeholder="—"
+             class="detail-inline mono w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Tracking #</div>
+      <input name="tracking_number"
+             value="{{ pkg.tracking_number or '' }}"
+             ondblclick="this.focus(); this.select()"
+             placeholder="—"
+             class="detail-inline mono w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Carrier</div>
+      <input name="carrier"
+             value="{{ pkg.carrier or '' }}"
+             ondblclick="this.focus(); this.select()"
+             placeholder="—"
+             class="detail-inline w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Ordered</div>
+      <input name="ordered_date"
+             value="{{ pkg.ordered_date or '' }}"
+             ondblclick="this.focus()"
+             type="date"
+             class="detail-inline w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Promised ship</div>
+      <input name="promised_ship_date"
+             value="{{ pkg.promised_ship_date or '' }}"
+             ondblclick="this.focus()"
+             type="date"
+             class="detail-inline w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Promised delivery</div>
+      <input name="promised_delivery_date"
+             value="{{ pkg.promised_delivery_date or '' }}"
+             ondblclick="this.focus()"
+             type="date"
+             class="detail-inline w-full mt-0.5" />
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Carrier ETA</div>
+      <div class="mt-0.5 py-[3px]">{{ pkg.est_delivery|pretty_date }}</div>
+    </div>
+    <div>
+      <div class="text-xs uppercase tracking-wider text-base-content/50">Updated</div>
+      <div class="mt-0.5 py-[3px]">{{ pkg.updated_at|pretty_time }}</div>
+    </div>
+  </div>
+
+  {% set track_url = pkg|tracking_url_for %}
+  {% if pkg.tracker_error %}
+  <div class="mt-5 bg-warning/10 border border-warning/40 rounded-lg p-3 text-sm">
+    <div class="font-medium text-warning-content/90">⚠ Tracker error</div>
+    <div class="mt-1 text-base-content/80">{{ pkg.tracker_error }}</div>
+    <div class="text-xs text-base-content/50 mt-1">Last tried {{ pkg.tracker_error_at|pretty_time }} — will retry on the next refresh.</div>
+    {% if track_url %}
+    <div class="mt-2">
+      <a href="{{ track_url }}" target="_blank" rel="noopener" class="link link-primary">
+        Track on carrier site ↗
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  {% elif track_url %}
+  <div class="mt-5 text-sm">
+    <a href="{{ track_url }}" target="_blank" rel="noopener" class="link link-primary">
+      Track on carrier site ↗
+    </a>
+  </div>
+  {% endif %}
+
+  {% if pkg.last_event %}
+  <div class="divider text-xs text-base-content/50 my-5">Latest event</div>
+  <div class="bg-base-200/60 rounded-lg p-3 text-sm">
+    <div>{{ pkg.last_event }}</div>
+    <div class="text-xs text-base-content/60 mt-1">
+      {{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{{ pkg.last_event_time|pretty_time }}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if events %}
+  <div class="divider text-xs text-base-content/50 my-5">Event history ({{ events|length }})</div>
+  <ol class="relative border-l border-base-300 ml-2 space-y-4 pl-5">
+    {% for ev in events|reverse %}
+    <li class="relative">
+      <span class="absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full {% if loop.first %}bg-primary{% else %}bg-base-300{% endif %}"></span>
+      <div class="text-xs text-base-content/60">{{ ev.datetime|pretty_time }}</div>
+      <div class="text-sm">{{ ev.message or ev.status }}</div>
+      {% if ev.location %}<div class="text-xs text-base-content/60">{{ ev.location }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+
+  <div class="mt-6 flex items-center justify-end gap-2">
+    <div class="text-xs text-base-content/40 mr-auto">Double-click any field to edit · ⌘ + Enter to save</div>
+    <button id="detail-save-btn" type="submit" class="btn btn-primary btn-sm invisible">
+      Save
+    </button>
+  </div>
+</form>

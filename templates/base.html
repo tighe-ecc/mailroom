@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" data-theme="corporate">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mailroom</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Inter", sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    /* HTMX indicator: hide completely (not just opacity) so buttons don't reserve spinner space when idle */
+    .htmx-indicator { display: none !important; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { display: inline-block !important; }
+    /* Inline-edit inputs in detail modal: look like plain text until focused. */
+    .detail-inline {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 2px 4px;
+      outline: none;
+      transition: background 120ms, border-color 120ms;
+    }
+    .detail-inline:hover { border-color: hsl(var(--b3, 0 0% 90%)); }
+    .detail-inline:focus {
+      background: hsl(var(--b2, 0 0% 96%));
+      border-color: hsl(var(--p, 200 100% 50%) / 0.5);
+    }
+    .detail-inline::placeholder { color: hsl(var(--bc, 0 0% 20%) / 0.3); }
+  </style>
+</head>
+<body class="bg-base-200 min-h-screen">
+  <div class="max-w-6xl mx-auto px-6 py-10">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

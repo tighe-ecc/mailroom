@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tighe.mailroom.poll</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/mailroom/.venv/bin/python</string>
+        <string>-m</string>
+        <string>mailroom.poll</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/mailroom</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/mailroom.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/mailroom.log</string>
+</dict>
+</plist>

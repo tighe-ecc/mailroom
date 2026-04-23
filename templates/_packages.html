@@ -1,0 +1,130 @@
+{# Packages + orders table fragment. Auto-refreshes every 60s via HTMX. #}
+{# OOB partials: emit only on HTMX swaps so the initial page render doesn't duplicate them. #}
+{% if is_htmx %}
+  {% include "_stats.html" %}
+  {% include "_inbox_chip.html" %}
+{% endif %}
+
+{% set delivered_q = 'true' if include_delivered else 'false' %}
+{% macro sort_header(col, label, width_class='') -%}
+  {% set new_dir = 'asc' if (sort_by == col and sort_dir == 'desc') else 'desc' %}
+  <th class="{{ width_class }}">
+    <a class="cursor-pointer hover:text-base-content inline-flex items-center gap-1 select-none"
+       hx-get="/packages?sort={{ col }}&dir={{ new_dir }}&include_delivered={{ delivered_q }}"
+       hx-target="#packages-region"
+       hx-swap="outerHTML">
+      {{ label }}
+      {% if sort_by == col %}
+        <span class="text-base-content">{{ '↓' if sort_dir == 'desc' else '↑' }}</span>
+      {% else %}
+        <span class="text-base-content/20">↕</span>
+      {% endif %}
+    </a>
+  </th>
+{%- endmacro %}
+
+<div id="packages-region"
+     hx-get="/packages?sort={{ sort_by }}&dir={{ sort_dir }}&include_delivered={{ delivered_q }}"
+     hx-trigger="every 60s"
+     hx-swap="outerHTML">
+  {% if not packages %}
+    <div class="bg-base-100 border border-base-300 rounded-lg p-10 text-center">
+      <p class="text-base-content/60">Nothing tracked yet.</p>
+      <p class="text-sm text-base-content/40 mt-1">Click <span class="font-medium">Add order</span> or drop an <span class="mono">.eml</span> into the inbox.</p>
+    </div>
+  {% else %}
+    <div class="overflow-hidden bg-base-100 border border-base-300 rounded-lg shadow-sm">
+      <table class="table table-fixed">
+        <thead class="bg-base-200/60">
+          <tr class="text-xs uppercase tracking-wider text-base-content/60">
+            {{ sort_header('status', 'Status', 'w-36') }}
+            {{ sort_header('description', 'Description') }}
+            {{ sort_header('order_number', 'Order #', 'w-32') }}
+            {{ sort_header('tracking_number', 'Tracking #', 'w-40') }}
+            {{ sort_header('est_delivery', 'ETA', 'w-28') }}
+            {{ sort_header('last_event_time', 'Latest event') }}
+            <th class="w-20"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pkg in packages %}
+          <tr class="align-top hover:bg-base-200/40 cursor-pointer"
+              hx-get="/packages/{{ pkg.id }}/details"
+              hx-target="#detail-content"
+              hx-swap="innerHTML"
+              hx-on::after-request="if (event.detail.successful) detail_modal.showModal();">
+            <td>
+              <span class="badge badge-{{ pkg.status|status_class }} badge-sm">
+                {{ pkg.status|display_status }}
+              </span>
+            </td>
+            <td>
+              <div class="font-medium truncate">{{ pkg.description or '—' }}</div>
+              <div class="text-xs text-base-content/60 mt-0.5">
+                {{ pkg.vendor or '' }}{% if pkg.vendor and pkg.po_number %} · {% endif %}{% if pkg.po_number %}PO {{ pkg.po_number }}{% endif %}
+              </div>
+            </td>
+            <td>
+              {% if pkg.order_number %}
+                <div class="mono text-sm truncate">{{ pkg.order_number }}</div>
+              {% else %}
+                <div class="text-base-content/40">—</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if pkg.tracking_number %}
+                {% set track_url = pkg|tracking_url_for %}
+                <div class="flex items-center gap-1 min-w-0">
+                  <span class="mono text-sm truncate min-w-0" title="{{ pkg.tracking_number }}">{{ pkg.tracking_number }}</span>
+                  {% if track_url %}
+                    <a href="{{ track_url }}" target="_blank" rel="noopener"
+                       class="link link-hover text-primary text-xs flex-none"
+                       onclick="event.stopPropagation()"
+                       title="Open carrier tracking page">↗</a>
+                  {% endif %}
+                </div>
+                {% if pkg.carrier %}<div class="text-xs text-base-content/60 mt-0.5 truncate">{{ pkg.carrier }}</div>{% endif %}
+              {% else %}
+                <div class="text-base-content/40">—</div>
+              {% endif %}
+            </td>
+            <td class="text-sm">
+              {% if pkg.est_delivery %}
+                {{ pkg.est_delivery|pretty_date }}
+              {% elif pkg.promised_delivery_date %}
+                <span class="text-base-content/70">{{ pkg.promised_delivery_date|pretty_date }}</span>
+                <div class="text-xs text-base-content/50">promised</div>
+              {% elif pkg.tracker_error %}
+                <span class="badge badge-warning badge-sm" title="{{ pkg.tracker_error }}">⚠ tracker error</span>
+              {% else %}
+                <span class="text-base-content/40">—</span>
+              {% endif %}
+            </td>
+            <td class="text-sm">
+              {% if pkg.last_event %}
+                <div class="truncate">{{ pkg.last_event }}</div>
+                <div class="text-xs text-base-content/60 mt-0.5">
+                  {{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{{ pkg.last_event_time|pretty_time }}
+                </div>
+              {% elif pkg.ordered_date %}
+                <span class="text-base-content/60">Ordered {{ pkg.ordered_date|pretty_date }}</span>
+              {% else %}
+                <span class="text-base-content/40">—</span>
+              {% endif %}
+            </td>
+            <td class="text-right" onclick="event.stopPropagation()">
+              <button class="btn btn-ghost btn-xs"
+                      hx-delete="/packages/{{ pkg.id }}"
+                      hx-confirm="Remove this entry from the tracker?"
+                      hx-target="#packages-region"
+                      hx-swap="outerHTML">
+                Remove
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</div>

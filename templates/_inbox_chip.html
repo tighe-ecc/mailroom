@@ -1,0 +1,8 @@
+{# Inbox "N emails waiting" chip. OOB-swapped alongside table updates. #}
+<span id="inbox-chip-region" hx-swap-oob="true">
+  {% if inbox_pending %}
+  <div class="badge badge-warning gap-1">
+    {{ inbox_pending }} email{{ 's' if inbox_pending != 1 else '' }} waiting
+  </div>
+  {% endif %}
+</span>

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="flex items-start justify-between mb-8">
+  <div>
+    <h1 class="text-3xl font-semibold tracking-tight">Mailroom</h1>
+  </div>
+  <div class="flex items-center gap-2">
+    {% include "_inbox_chip.html" %}
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/inbox/process"
+            hx-target="#packages-region"
+            hx-swap="outerHTML"
+            hx-indicator="#inbox-spinner">
+      <span id="inbox-spinner" class="htmx-indicator loading loading-spinner loading-xs"></span>
+      Process inbox
+    </button>
+    <button class="btn btn-sm btn-ghost"
+            hx-post="/refresh"
+            hx-target="#packages-region"
+            hx-swap="outerHTML"
+            hx-indicator="#refresh-spinner">
+      <span id="refresh-spinner" class="htmx-indicator loading loading-spinner loading-xs"></span>
+      Refresh status
+    </button>
+    <button class="btn btn-sm btn-primary" onclick="add_modal.showModal()">
+      Add order
+    </button>
+  </div>
+</header>
+
+{% include "_stats.html" %}
+
+<div class="flex items-center justify-between mb-4">
+  <h2 class="text-lg font-medium">Packages and orders</h2>
+  <label class="label cursor-pointer gap-3">
+    <span class="label-text text-sm">Show delivered</span>
+    <input type="checkbox" class="toggle toggle-sm"
+           hx-get="/packages"
+           hx-vals='js:{include_delivered: event.target.checked, sort: "{{ sort_by }}", dir: "{{ sort_dir }}"}'
+           hx-target="#packages-region"
+           hx-swap="outerHTML" />
+  </label>
+</div>
+
+{% include "_packages.html" %}
+
+<form id="upload-form"
+      hx-post="/inbox/upload"
+      hx-target="#packages-region"
+      hx-swap="outerHTML"
+      hx-encoding="multipart/form-data"
+      class="hidden">
+  <input id="upload-file" type="file" name="file" accept=".eml" />
+</form>
+
+<div id="drop-overlay"
+     class="hidden fixed inset-0 bg-primary/10 border-4 border-dashed border-primary z-50 pointer-events-none flex items-center justify-center">
+  <div class="bg-base-100 rounded-lg shadow-xl px-8 py-6 text-center">
+    <div class="text-xl font-semibold">Drop email here</div>
+    <div class="text-sm text-base-content/60 mt-1">.eml files will be parsed into a new or updated row</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const overlay = document.getElementById('drop-overlay');
+  const uploadForm = document.getElementById('upload-form');
+  const uploadInput = document.getElementById('upload-file');
+  let dragDepth = 0;
+
+  function hasFiles(e) {
+    return e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  }
+
+  document.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    overlay.classList.remove('hidden');
+  });
+  document.addEventListener('dragover', (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.add('hidden');
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    overlay.classList.add('hidden');
+
+    const files = Array.from(e.dataTransfer.files)
+      .filter(f => f.name.toLowerCase().endsWith('.eml'));
+    if (!files.length) return;
+
+    // Upload one at a time so HTMX gets a clean swap per file.
+    for (const file of files) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      uploadInput.files = dt.files;
+      await new Promise(resolve => {
+        uploadForm.addEventListener('htmx:afterRequest', resolve, {once: true});
+        htmx.trigger(uploadForm, 'submit');
+      });
+    }
+  });
+})();
+</script>
+
+<dialog id="detail_modal" class="modal">
+  <div class="modal-box max-w-2xl">
+    <div id="detail-content"></div>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn btn-ghost">Close</button></form>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<dialog id="add_modal" class="modal">
+  <div class="modal-box max-w-2xl">
+    <h3 class="text-lg font-semibold mb-1">Add order</h3>
+    <p class="text-sm text-base-content/60 mb-4">
+      Fill in what you have. If a tracking number isn't available yet, leave it blank and
+      the entry will start as <span class="badge badge-ghost badge-sm">Ordered</span>.
+    </p>
+    <div class="bg-base-200/60 border border-dashed border-base-300 rounded-lg p-4 mb-4 text-center">
+      <div class="text-sm font-medium">Or drop an email here for auto-parsing</div>
+    </div>
+    <form hx-post="/add"
+          hx-target="#packages-region"
+          hx-swap="outerHTML"
+          hx-on::after-request="if (event.detail.successful) { add_modal.close(); this.reset(); }">
+      <div class="form-control mb-3">
+        <label class="label py-1"><span class="label-text">Description</span></label>
+        <input name="description" type="text" class="input input-bordered" required
+               placeholder="e.g. Kapton tape, endmills, lathe chuck" />
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Vendor</span></label>
+          <input name="vendor" type="text" class="input input-bordered"
+                 placeholder="McMaster-Carr, Amazon, MSC…" />
+        </div>
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">PO number</span></label>
+          <input name="po_number" type="text" class="input input-bordered" />
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Order / invoice #</span></label>
+          <input name="order_number" type="text" class="input input-bordered mono" />
+        </div>
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Ordered date</span></label>
+          <input name="ordered_date" type="date" class="input input-bordered" />
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Promised ship date</span></label>
+          <input name="promised_ship_date" type="date" class="input input-bordered" />
+        </div>
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Promised delivery date</span></label>
+          <input name="promised_delivery_date" type="date" class="input input-bordered" />
+        </div>
+      </div>
+      <div class="divider text-xs text-base-content/50 my-4">already shipped?</div>
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text">Tracking number</span></label>
+          <input name="tracking_number" type="text" class="input input-bordered mono" />
+        </div>
+        <div class="form-control">
+          <label class="label py-1">
+            <span class="label-text">Carrier</span>
+            <span class="label-text-alt text-base-content/50">auto-detect</span>
+          </label>
+          <input name="carrier" type="text" class="input input-bordered"
+                 placeholder="UPS, FedEx, USPS, DHLExpress…" />
+        </div>
+      </div>
+      <div class="modal-action">
+        <button type="button" class="btn btn-ghost" onclick="add_modal.close()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+{% endblock %}
