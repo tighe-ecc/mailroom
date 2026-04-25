@@ -251,19 +251,22 @@ def _query_4px(tracking_number: str) -> ScrapedSnapshot:
             "location": (t.get("tkLocation") or None),
         })
 
-    # 4PX returns tracks newest-first. Derive status from the latest event's category
-    # (M/C = mid-transit, D = delivered, R = returned, O/L = label/info only).
+    # 4PX returns tracks newest-first. Derive status from the latest event's
+    # description and category. Note: tkCategoryCode "D" means "Transiting in
+    # Destination Country" (e.g. customs cleared, out for delivery), NOT
+    # delivered — so we key delivery off the description text.
     status = "in_transit" if events else "pre_transit"
     last = raw_tracks[0] if raw_tracks else {}
     cat = (last.get("tkCategoryCode") or "").upper()
-    code = (last.get("tkCode") or "").upper()
     desc = (last.get("tkTranslatedDesc") or last.get("tkDesc") or "").lower()
-    if cat == "D" or "_D_" in code or "delivered" in desc or "signed" in desc:
+    if "out for delivery" in desc or "with delivery courier" in desc:
+        status = "out_for_delivery"
+    elif "delivered" in desc or "signed for" in desc or "signed by" in desc:
         status = "delivered"
-    elif cat == "R" or "_R_" in code:
+    elif cat == "R":
         status = "return_to_sender"
     elif cat in {"O", "L"} and not any(
-        (t.get("tkCategoryCode") or "").upper() in {"M", "C", "A", "S", "D"}
+        (t.get("tkCategoryCode") or "").upper() in {"M", "C", "A", "S", "I", "D"}
         for t in raw_tracks
     ):
         status = "pre_transit"
