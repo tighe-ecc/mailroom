@@ -6,6 +6,7 @@ Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8501
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +16,13 @@ import re
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from mailroom import db, easypost, inbox, poll, scrape, watcher
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "feedback-button"))
+from feedback import note as _feedback_note  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -84,6 +89,21 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Mailroom", lifespan=_lifespan)
+app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+
+
+@app.post("/feedback")
+async def feedback(request: Request) -> dict[str, bool]:
+    payload = await request.json()
+    _feedback_note(
+        payload.get("description", ""),
+        type=payload.get("type", "bug"),
+        title=payload.get("title") or None,
+        tool=payload.get("tool") or None,
+        url=payload.get("url") or None,
+        path=ROOT,
+    )
+    return {"ok": True}
 
 
 def _context(

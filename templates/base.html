@@ -35,5 +35,9 @@
   <div class="max-w-6xl mx-auto px-6 py-10">
     {% block content %}{% endblock %}
   </div>
+  <script type="module">
+    import { initFeedback } from '/static/feedback-button.js';
+    initFeedback({ endpoint: '/feedback', toolName: 'procurement-tracker' });
+  </script>
 </body>
 </html>
