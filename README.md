@@ -50,6 +50,8 @@ cp .env.example .env
 
 Two `launchd` agents — one that runs the GUI server + inbox watcher always (so drops into `~/Mailroom/` are processed within seconds), one that re-polls carrier status every 30 minutes.
 
+The plist files contain the placeholder `/path/to/mailroom`. Replace it with the absolute path to your repo (launchd does not expand `~` or shell variables) before copying them into place — e.g. `sed -i '' "s|/path/to/mailroom|$PWD|g" scripts/com.tighe.mailroom.*.plist` from the repo root.
+
 ```bash
 cp scripts/com.tighe.mailroom.gui.plist  ~/Library/LaunchAgents/
 cp scripts/com.tighe.mailroom.poll.plist ~/Library/LaunchAgents/
@@ -110,7 +112,7 @@ An earlier iteration included [scripts/send-to-mailroom.applescript](scripts/sen
 ## File layout
 
 ```
-mailroom/ (repo dir is currently /path/to/mailroom/)
+mailroom/
 ├── app.py                     # FastAPI app — HTMX endpoints, Jinja2 rendering, lifespan-managed watcher
 ├── templates/
 │   ├── base.html              # Tailwind + DaisyUI + HTMX (all via CDN)
