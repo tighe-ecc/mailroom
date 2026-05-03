@@ -89,6 +89,7 @@ def poll_once() -> dict[str, int]:
                     old_status=old_status,
                     new_status=snap.status,
                     location=snap.last_event_location,
+                    vendor=pkg.get("vendor"),
                 )
                 carrier_summary["notified"] += 1
             continue

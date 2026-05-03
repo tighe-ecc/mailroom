@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS packages (
     order_number           TEXT,
     description            TEXT,
     vendor                 TEXT,
+    sender_domain          TEXT,
     po_number              TEXT,
     carrier                TEXT,
     easypost_id            TEXT,
@@ -46,9 +48,39 @@ CREATE TABLE IF NOT EXISTS packages (
 CREATE INDEX IF NOT EXISTS idx_packages_status ON packages(status);
 CREATE INDEX IF NOT EXISTS idx_packages_order_number ON packages(order_number);
 CREATE INDEX IF NOT EXISTS idx_packages_po_number ON packages(po_number);
+-- sender_domain index is created in _migrate_add_columns so the index DDL
+-- doesn't run before the column has been added on existing v2 databases.
 """
 
 TERMINAL_STATUSES = {"delivered", "cancelled", "return_to_sender", "failure", "error"}
+
+# Lifecycle ordering. Used to detect regressions — e.g. a late-arriving
+# order-confirmation email should not downgrade an already-shipped row to
+# "confirmed". Values are co-equal across "out_for_delivery" and
+# "available_for_pickup" because they're parallel branches of the same
+# in-flight stage.
+STATUS_RANK = {
+    "unknown": -1,
+    "ordered": 0,
+    "confirmed": 1,
+    "in_fulfillment": 2,
+    "pre_transit": 3,
+    "in_transit": 4,
+    "out_for_delivery": 5,
+    "available_for_pickup": 5,
+    "delivered": 6,
+    "return_to_sender": 6,
+    "failure": 6,
+    "cancelled": 6,
+    "error": 6,
+}
+
+
+def is_status_regression(old: str | None, new: str | None) -> bool:
+    """True iff `new` would move the row backward in the lifecycle vs `old`."""
+    if not new or not old or old == new:
+        return False
+    return STATUS_RANK.get(new, -1) < STATUS_RANK.get(old, -1)
 
 
 def default_db_path() -> Path:
@@ -138,9 +170,13 @@ def _migrate_add_columns(conn: sqlite3.Connection) -> None:
         ("tracker_error", "TEXT"),
         ("tracker_error_at", "TEXT"),
         ("tracking_url", "TEXT"),
+        ("sender_domain", "TEXT"),
     ]:
         if col not in cols:
             conn.execute(f"ALTER TABLE packages ADD COLUMN {col} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_packages_sender_domain ON packages(sender_domain)"
+    )
 
 
 def init_schema(db_path: Path | None = None) -> None:
@@ -163,6 +199,7 @@ def add_package(
     promised_ship_date: str | None = None,
     promised_delivery_date: str | None = None,
     tracking_url: str | None = None,
+    sender_domain: str | None = None,
     db_path: Path | None = None,
 ) -> int:
     """Insert a new row and return its id."""
@@ -175,9 +212,9 @@ def add_package(
                 tracking_number, order_number, description, vendor, po_number,
                 carrier, easypost_id, status,
                 ordered_date, promised_ship_date, promised_delivery_date,
-                tracking_url,
+                tracking_url, sender_domain,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tracking_number,
@@ -192,6 +229,7 @@ def add_package(
                 promised_ship_date,
                 promised_delivery_date,
                 tracking_url,
+                sender_domain,
                 now,
                 now,
             ),
@@ -214,6 +252,7 @@ def update_package(
     promised_ship_date: str | None = None,
     promised_delivery_date: str | None = None,
     tracking_url: str | None = None,
+    sender_domain: str | None = None,
     db_path: Path | None = None,
 ) -> None:
     """Patch any subset of fields on an existing row. None means "leave alone"."""
@@ -230,6 +269,7 @@ def update_package(
         "promised_ship_date": promised_ship_date,
         "promised_delivery_date": promised_delivery_date,
         "tracking_url": tracking_url,
+        "sender_domain": sender_domain,
     }
     set_parts = [f"{k} = COALESCE(?, {k})" for k in fields]
     params = list(fields.values()) + [_now(), row_id]
@@ -298,18 +338,129 @@ def set_tracker_error(
         )
 
 
+_ID_NOISE = re.compile(r"[\s\-_/.#]+")
+_ID_PREFIX = re.compile(
+    r"^(ORDER|ORD|INVOICE|INV|PO|REF)[\s\-_/.#]+", re.IGNORECASE
+)
+
+
+def _norm_id(value: str | None) -> str | None:
+    """Normalize an order/PO/tracking ID for fuzzy comparison.
+
+    Drops a leading vendor prefix like "ORD" / "PO" / "INV" *if* it was
+    followed by a separator in the original (so "Order #12345" matches "12345"
+    but "POPULAR-1" stays intact), then strips whitespace and common
+    separators (``- _ / . #``) and uppercases. Pure-numeric IDs additionally
+    have leading zeros stripped.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = _ID_PREFIX.sub("", s, count=1)
+    s = _ID_NOISE.sub("", s).upper()
+    if not s:
+        return None
+    if s.isdigit():
+        s = s.lstrip("0") or "0"
+    return s
+
+
+def _norm_vendor(value: str | None) -> str | None:
+    if value is None:
+        return None
+    s = re.sub(r"[\s,.\-]+", "", str(value)).upper()
+    for suffix in ("CORPORATION", "CORP", "INCORPORATED", "INC", "LLC", "LTD", "CO"):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[: -len(suffix)]
+    return s or None
+
+
+# Email subdomains routinely used for transactional mail. Stripping these so
+# `mail.mark-10.com` and `notifications.mark-10.com` and `mark-10.com` all
+# normalize to `mark-10.com`.
+_EMAIL_SUBDOMAINS = (
+    "mail", "email", "e", "smtp", "send", "sender", "mailer",
+    "notifications", "notification", "notify", "info",
+    "orders", "order", "shipping", "ship", "shipment",
+    "tracking", "track", "support", "no-reply", "noreply", "donotreply",
+    "bounce", "bounces", "reply", "post",
+)
+
+
+def _norm_domain(value: str | None) -> str | None:
+    """Normalize a domain for comparison.
+
+    Lowercases, drops `www.`, and strips a leading transactional subdomain
+    (`mail.`, `notifications.`, `orders.`, …) so different email gateways
+    of the same vendor compare equal.
+    """
+    if value is None:
+        return None
+    s = str(value).strip().lower().lstrip(".")
+    if not s:
+        return None
+    if s.startswith("www."):
+        s = s[4:]
+    parts = s.split(".")
+    while len(parts) >= 3 and parts[0] in _EMAIL_SUBDOMAINS:
+        parts = parts[1:]
+    return ".".join(parts) or None
+
+
+def extract_sender_domain(sender_header: str | None) -> str | None:
+    """Pull the (normalized) domain out of an RFC 5322 From header.
+
+    Handles `"Name" <addr@host>` and bare `addr@host`. Returns the normalized
+    domain — see ``_norm_domain`` — or None if no `@` is present.
+    """
+    if not sender_header:
+        return None
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(sender_header)
+    if "@" not in addr:
+        return None
+    return _norm_domain(addr.rsplit("@", 1)[1])
+
+
+VENDOR_FALLBACK_DAYS = 90
+
+
 def find_match(
     tracking_number: str | None = None,
     order_number: str | None = None,
     po_number: str | None = None,
     vendor: str | None = None,
+    sender_domain: str | None = None,
     db_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """Look up an existing row using the best available identifier.
 
-    Priority: tracking_number (exact) → order_number (+ vendor if given) → po_number.
-    Returns the row as a dict, or None.
+    Priority:
+      1. tracking_number (exact)
+      2. order_number — normalized comparison, narrowed by sender_domain
+         (preferred) or vendor name when ambiguous
+      3. po_number — same
+      4. cross-field — order_number matches an existing po_number or vice-versa
+      5. sender-domain fallback — exactly one open (no tracking) row from same
+         sender domain within the last 90 days. Vendor name is only consulted
+         as a last-resort when sender_domain isn't available (manual entries).
+
+    Sender domain is the From-header host (e.g. ``mark-10.com``); it's stable
+    across order-confirmation and shipping-confirmation emails from the same
+    vendor in a way that LLM-extracted vendor names ("MARK-10 Corp" vs
+    "Mark-10 Corporation") aren't.
+
+    Normalized ID comparison strips whitespace/separators, uppercases, drops
+    common prefixes like "ORD" / "PO" / "INV", and ignores leading zeros, so
+    minor extraction variance ("ORD-12345" vs "12345") still matches.
     """
+    norm_order = _norm_id(order_number)
+    norm_po = _norm_id(po_number)
+    norm_vendor = _norm_vendor(vendor)
+    norm_domain = _norm_domain(sender_domain)
     with connect(db_path) as conn:
         if tracking_number:
             row = conn.execute(
@@ -317,26 +468,105 @@ def find_match(
             ).fetchone()
             if row:
                 return dict(row)
-        if order_number:
-            if vendor:
-                row = conn.execute(
-                    "SELECT * FROM packages WHERE order_number = ? AND vendor = ? LIMIT 1",
-                    (order_number, vendor),
-                ).fetchone()
-                if row:
-                    return dict(row)
-            row = conn.execute(
-                "SELECT * FROM packages WHERE order_number = ? LIMIT 1",
-                (order_number,),
-            ).fetchone()
-            if row:
-                return dict(row)
-        if po_number:
-            row = conn.execute(
-                "SELECT * FROM packages WHERE po_number = ? LIMIT 1", (po_number,)
-            ).fetchone()
-            if row:
-                return dict(row)
+
+        if norm_order:
+            match = _scan_for_id(conn, "order_number", norm_order, norm_domain, norm_vendor)
+            if match:
+                return match
+
+        if norm_po:
+            match = _scan_for_id(conn, "po_number", norm_po, norm_domain, norm_vendor)
+            if match:
+                return match
+
+        # Cross-field: vendors don't always agree on which is "order" vs "PO".
+        if norm_order:
+            match = _scan_for_id(conn, "po_number", norm_order, norm_domain, norm_vendor)
+            if match:
+                return match
+        if norm_po:
+            match = _scan_for_id(conn, "order_number", norm_po, norm_domain, norm_vendor)
+            if match:
+                return match
+
+        # Sender-domain fallback: only when the inbound email has a tracking
+        # number (i.e. is a shipping confirmation). Pairs the shipping
+        # confirmation with the most recent un-shipped order from the same
+        # sender domain. Domain is far more stable than vendor-name strings
+        # extracted by the LLM, so we prefer it; we only fall back to
+        # vendor-name matching if no domain is available.
+        if tracking_number and (norm_domain or norm_vendor):
+            match = _open_row_fallback(conn, norm_domain, norm_vendor)
+            if match:
+                return match
+    return None
+
+
+def _scan_for_id(
+    conn: sqlite3.Connection,
+    column: str,
+    target_norm: str,
+    domain_norm: str | None,
+    vendor_norm: str | None,
+) -> dict[str, Any] | None:
+    """Find a row whose <column> normalizes to target_norm.
+
+    When multiple rows match (rare — same order # used by different vendors),
+    prefer the one whose sender_domain matches; fall back to vendor name.
+    """
+    rows = conn.execute(
+        f"SELECT * FROM packages WHERE {column} IS NOT NULL AND {column} != ''"
+    ).fetchall()
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        if _norm_id(row[column]) == target_norm:
+            matches.append(dict(row))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        if domain_norm:
+            by_domain = [m for m in matches if _norm_domain(m.get("sender_domain")) == domain_norm]
+            if by_domain:
+                return by_domain[0]
+        if vendor_norm:
+            by_vendor = [m for m in matches if _norm_vendor(m.get("vendor")) == vendor_norm]
+            if by_vendor:
+                return by_vendor[0]
+    return matches[0]
+
+
+def _open_row_fallback(
+    conn: sqlite3.Connection,
+    domain_norm: str | None,
+    vendor_norm: str | None,
+) -> dict[str, Any] | None:
+    """If exactly one recent open row matches by domain (preferred) or vendor, return it."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=VENDOR_FALLBACK_DAYS)).isoformat(
+        timespec="seconds"
+    )
+    rows = conn.execute(
+        """
+        SELECT * FROM packages
+        WHERE (tracking_number IS NULL OR tracking_number = '')
+          AND created_at >= ?
+          AND (status IS NULL OR status NOT IN ('delivered','cancelled','return_to_sender','failure','error'))
+        """,
+        (cutoff,),
+    ).fetchall()
+    if domain_norm:
+        domain_matches = [
+            dict(r) for r in rows if _norm_domain(r["sender_domain"]) == domain_norm
+        ]
+        if len(domain_matches) == 1:
+            return domain_matches[0]
+        if domain_matches:
+            return None  # multiple same-domain → ambiguous, don't guess
+    if vendor_norm:
+        vendor_matches = [
+            dict(r) for r in rows if _norm_vendor(r["vendor"]) == vendor_norm
+        ]
+        if len(vendor_matches) == 1:
+            return vendor_matches[0]
     return None
 
 

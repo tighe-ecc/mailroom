@@ -44,24 +44,9 @@ VALID_STATUSES = [
     "return_to_sender", "failure", "cancelled", "error", "unknown",
 ]
 
-# Rank for preventing regressions when the scraped page is sparse — e.g. a freight
-# page showing only "Est. Delivery" with no events shouldn't push an already
-# in-transit row back to pre_transit.
-_STATUS_RANK = {
-    "unknown": -1,
-    "ordered": 0,
-    "confirmed": 1,
-    "in_fulfillment": 2,
-    "pre_transit": 3,
-    "in_transit": 4,
-    "out_for_delivery": 5,
-    "available_for_pickup": 5,
-    "delivered": 6,
-    "return_to_sender": 6,
-    "failure": 6,
-    "cancelled": 6,
-    "error": 6,
-}
+# Re-export for legacy in-module use; canonical source is db.STATUS_RANK so the
+# inbox pipeline and scrape pipeline agree on lifecycle ordering.
+_STATUS_RANK = db.STATUS_RANK
 
 
 SYSTEM_PROMPT = f"""\
@@ -386,6 +371,7 @@ def apply_to_row(
             old_status=old_status,
             new_status=effective_status,
             location=snap.last_event_location,
+            vendor=pkg.get("vendor"),
         )
 
     return True

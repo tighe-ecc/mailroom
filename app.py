@@ -1,6 +1,6 @@
 """FastAPI + Tailwind/DaisyUI dashboard for Mailroom.
 
-Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 8501
+Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 47821
 """
 
 from __future__ import annotations

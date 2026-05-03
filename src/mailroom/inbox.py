@@ -112,13 +112,14 @@ def _load_eml(path: Path) -> tuple[str, str, str]:
     return subject, sender, body
 
 
-def _apply(parsed: parser.ParsedEmail) -> tuple[str, int]:
+def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tuple[str, int]:
     """Create or update a row from a ParsedEmail. Returns (action, row_id)."""
     existing = db.find_match(
         tracking_number=parsed.tracking_number,
         order_number=parsed.order_number,
         po_number=parsed.po_number,
         vendor=parsed.vendor,
+        sender_domain=sender_domain,
     )
 
     status = _status_from_signal(parsed.status_signal, parsed.tracking_number)
@@ -149,6 +150,13 @@ def _apply(parsed: parser.ParsedEmail) -> tuple[str, int]:
     if existing:
         old_status = existing.get("status")
         row_id = existing["id"]
+        # Don't let a late-arriving order-confirmation email regress an
+        # already-shipped row's status. (Inbox files sort alphabetically, so
+        # "DigiKey has shipped..." can be processed before "Thank you for your
+        # DigiKey order!" — without this guard the second email overwrites
+        # status="delivered" with status="confirmed".)
+        if db.is_status_regression(old_status, status):
+            status = None
         db.update_package(
             row_id=row_id,
             tracking_number=parsed.tracking_number,
@@ -163,6 +171,7 @@ def _apply(parsed: parser.ParsedEmail) -> tuple[str, int]:
             promised_ship_date=parsed.promised_ship_date,
             promised_delivery_date=parsed.promised_delivery_date,
             tracking_url=parsed.tracking_url,
+            sender_domain=sender_domain,
         )
         action = "updated"
     else:
@@ -179,6 +188,7 @@ def _apply(parsed: parser.ParsedEmail) -> tuple[str, int]:
             promised_ship_date=parsed.promised_ship_date,
             promised_delivery_date=parsed.promised_delivery_date,
             tracking_url=parsed.tracking_url,
+            sender_domain=sender_domain,
         )
         old_status = None
         action = "created"
@@ -216,6 +226,7 @@ def _apply(parsed: parser.ParsedEmail) -> tuple[str, int]:
             old_status=old_status,
             new_status=status,
             location=snap.last_event_location if snap else None,
+            vendor=parsed.vendor or (existing or {}).get("vendor"),
         )
 
     return action, row_id
@@ -264,7 +275,8 @@ def _process_inbox_locked() -> dict[str, int]:
                     parsed.confidence,
                 )
                 continue
-            action, row_id = _apply(parsed)
+            sender_domain = db.extract_sender_domain(sender)
+            action, row_id = _apply(parsed, sender_domain=sender_domain)
             summary[action] += 1
             shutil.move(str(path), str(dirs["processed"] / path.name))
             log.info("%s row %s from %s: %s", action, row_id, path.name, asdict(parsed))

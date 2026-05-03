@@ -1,4 +1,4 @@
-"""Unit tests for mailroom.notify click-to-open behavior.
+"""Unit tests for mailroom.notify dispatch.
 
 Run: .venv/bin/python -m unittest tests.test_notify -v
 """
@@ -21,46 +21,57 @@ class SendTests(unittest.TestCase):
             return None
 
         with patch.object(notify.shutil, "which", side_effect=fake_which), \
+             patch.object(notify.os.path, "isfile", return_value=False), \
              patch.object(notify.subprocess, "run") as mock_run:
             notify.send(**send_kwargs)
             return mock_run
 
-    def test_terminal_notifier_with_url_includes_execute_open(self):
+    def test_status_title_and_vendor_subtitle_passed_to_terminal_notifier(self):
         mock_run = self._run_send(
             tn_path="/opt/homebrew/bin/terminal-notifier",
             osa_path="/usr/bin/osascript",
             title="Shipped",
-            message="Widget",
-            url="http://localhost:8501",
+            subtitle="MARK-10 Corporation",
+            message="Series R50 torque sensor",
+            url="http://localhost:47821",
         )
-        mock_run.assert_called_once()
         args = mock_run.call_args.args[0]
-        self.assertEqual(args[0], "/opt/homebrew/bin/terminal-notifier")
-        self.assertIn("-execute", args)
-        self.assertEqual(
-            args[args.index("-execute") + 1], "open http://localhost:8501"
-        )
-        self.assertNotIn("-open", args)
-        self.assertIn("-title", args)
-        self.assertEqual(args[args.index("-title") + 1], notify.APP_TITLE)
+        self.assertEqual(args[args.index("-title") + 1], "Shipped")
+        self.assertEqual(args[args.index("-subtitle") + 1], "MARK-10 Corporation")
+        self.assertEqual(args[args.index("-message") + 1], "Series R50 torque sensor")
 
-    def test_terminal_notifier_shell_quotes_url(self):
+    def test_url_routed_via_execute_with_absolute_open_path(self):
         mock_run = self._run_send(
             tn_path="/opt/homebrew/bin/terminal-notifier",
             osa_path="/usr/bin/osascript",
             title="Shipped",
             message="Widget",
-            url="http://localhost:8501/pkg?x=1&y=2",
+            url="http://localhost:47821",
         )
         args = mock_run.call_args.args[0]
-        # Shell metacharacters in the URL must be quoted so the click handler
-        # doesn't treat `&` as a background operator.
         self.assertEqual(
             args[args.index("-execute") + 1],
-            "open 'http://localhost:8501/pkg?x=1&y=2'",
+            "/usr/bin/open http://localhost:47821",
+        )
+        self.assertNotIn("-open", args)
+
+    def test_execute_shell_quotes_url_with_metacharacters(self):
+        mock_run = self._run_send(
+            tn_path="/opt/homebrew/bin/terminal-notifier",
+            osa_path="/usr/bin/osascript",
+            title="Shipped",
+            message="Widget",
+            url="http://localhost:47821/pkg?x=1&y=2",
+        )
+        args = mock_run.call_args.args[0]
+        # `&` must not be interpreted as a shell background operator.
+        self.assertEqual(
+            args[args.index("-execute") + 1],
+            "/usr/bin/open 'http://localhost:47821/pkg?x=1&y=2'",
         )
 
-    def test_terminal_notifier_without_url_omits_execute(self):
+    def test_app_icon_added_when_static_icon_exists(self):
+        self.assertTrue(notify._ICON_PATH.exists(), f"{notify._ICON_PATH} missing")
         mock_run = self._run_send(
             tn_path="/opt/homebrew/bin/terminal-notifier",
             osa_path="/usr/bin/osascript",
@@ -68,22 +79,49 @@ class SendTests(unittest.TestCase):
             message="Widget",
         )
         args = mock_run.call_args.args[0]
-        self.assertNotIn("-execute", args)
-        self.assertNotIn("-open", args)
+        self.assertIn("-appIcon", args)
+        self.assertTrue(args[args.index("-appIcon") + 1].endswith("/static/icon.png"))
 
-    def test_osascript_fallback_ignores_url(self):
+    def test_subtitle_omitted_when_none(self):
+        mock_run = self._run_send(
+            tn_path="/opt/homebrew/bin/terminal-notifier",
+            osa_path="/usr/bin/osascript",
+            title="Shipped",
+            subtitle=None,
+            message="Widget",
+        )
+        args = mock_run.call_args.args[0]
+        self.assertNotIn("-subtitle", args)
+
+    def test_homebrew_fallback_path_used_when_path_excludes_brew(self):
+        # launchd's default PATH excludes /opt/homebrew/bin. shutil.which()
+        # returns None but the explicit fallback paths must still locate it.
+        def fake_isfile(path: str) -> bool:
+            return path == "/opt/homebrew/bin/terminal-notifier"
+
+        def fake_access(path: str, mode: int) -> bool:
+            return path == "/opt/homebrew/bin/terminal-notifier"
+
+        with patch.object(notify.shutil, "which", return_value=None), \
+             patch.object(notify.os.path, "isfile", side_effect=fake_isfile), \
+             patch.object(notify.os, "access", side_effect=fake_access), \
+             patch.object(notify.subprocess, "run") as mock_run:
+            notify.send(title="Shipped", message="Widget", url="http://localhost:47821")
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[0], "/opt/homebrew/bin/terminal-notifier")
+
+    def test_osascript_fallback_when_terminal_notifier_unavailable(self):
         mock_run = self._run_send(
             tn_path=None,
             osa_path="/usr/bin/osascript",
             title="Shipped",
             message="Widget",
-            url="http://localhost:8501",
+            url="http://localhost:47821",
         )
-        mock_run.assert_called_once()
         args = mock_run.call_args.args[0]
         self.assertEqual(args[0], "/usr/bin/osascript")
-        # osascript path has no "-open" concept; URL must not leak in.
-        self.assertNotIn("http://localhost:8501", args)
+        # osascript path can't carry a click action; URL must not leak in.
+        self.assertNotIn("http://localhost:47821", args)
 
     def test_silent_when_no_backend_available(self):
         mock_run = self._run_send(
@@ -91,15 +129,42 @@ class SendTests(unittest.TestCase):
             osa_path=None,
             title="Shipped",
             message="Widget",
-            url="http://localhost:8501",
+            url="http://localhost:47821",
         )
         mock_run.assert_not_called()
 
 
 class NotifyStatusChangeTests(unittest.TestCase):
-    def test_every_transition_passes_dashboard_url(self):
+    def test_pre_shipment_to_shipped_triggers_shipped(self):
+        with patch.object(notify, "send") as mock_send:
+            notify.notify_status_change("Widget", "ordered", "pre_transit", None, vendor="V")
+        kw = mock_send.call_args.kwargs
+        self.assertEqual(kw["title"], "Shipped")
+        self.assertEqual(kw["subtitle"], "V")
+
+    def test_status_is_title_and_vendor_is_subtitle(self):
+        with patch.object(notify, "send") as mock_send:
+            notify.notify_status_change(
+                description="Endmills",
+                old_status="out_for_delivery",
+                new_status="delivered",
+                location="San Francisco, CA",
+                vendor="Grainger",
+            )
+        kw = mock_send.call_args.kwargs
+        self.assertEqual(kw["title"], "Delivered")
+        self.assertEqual(kw["subtitle"], "Grainger")
+        self.assertIn("Endmills", kw["message"])
+        self.assertIn("San Francisco, CA", kw["message"])
+
+    def test_uninteresting_transition_does_not_notify(self):
+        with patch.object(notify, "send") as mock_send:
+            notify.notify_status_change("Widget", "in_transit", "in_transit", None)
+            mock_send.assert_not_called()
+
+    def test_every_active_transition_passes_dashboard_url(self):
         cases = [
-            (None, "pre_transit"),          # shipped
+            (None, "pre_transit"),
             ("in_transit", "out_for_delivery"),
             ("out_for_delivery", "delivered"),
             ("in_transit", "return_to_sender"),
@@ -110,13 +175,7 @@ class NotifyStatusChangeTests(unittest.TestCase):
                  patch.object(notify, "send") as mock_send:
                 notify.notify_status_change("Widget", old, new, location=None)
                 mock_send.assert_called_once()
-                kwargs = mock_send.call_args.kwargs
-                self.assertEqual(kwargs.get("url"), notify.DASHBOARD_URL)
-
-    def test_uninteresting_transition_does_not_notify(self):
-        with patch.object(notify, "send") as mock_send:
-            notify.notify_status_change("Widget", "in_transit", "in_transit", location=None)
-            mock_send.assert_not_called()
+                self.assertEqual(mock_send.call_args.kwargs.get("url"), notify.DASHBOARD_URL)
 
 
 if __name__ == "__main__":

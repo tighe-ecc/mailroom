@@ -6,7 +6,7 @@ Drop an order-confirmation email into the inbox folder, walk away, and get a des
 
 ## What it does
 
-- **Dashboard** at `http://localhost:8501` — Tailwind + DaisyUI UI served by FastAPI with HTMX for live updates. Unified view that covers the full lifecycle — *ordered → confirmed → in fulfillment → pre-transit → in transit → out for delivery → delivered* — with status badges, ETAs, and latest carrier event. Click any row to see the full detail card; edit fields inline.
+- **Dashboard** at `http://localhost:47821` — Tailwind + DaisyUI UI served by FastAPI with HTMX for live updates. Unified view that covers the full lifecycle — *ordered → confirmed → in fulfillment → pre-transit → in transit → out for delivery → delivered* — with status badges, ETAs, and latest carrier event. Click any row to see the full detail card; edit fields inline.
 - **Email ingestion** via a watched folder at `~/Mailroom/`. Drag an order-confirmation or shipping-confirmation email out of Outlook into that folder; a filesystem watcher picks it up within a second or two, extracts vendor / PO / order # / dates / tracking number via OpenAI `gpt-4o-mini`, and creates or updates the right row automatically.
 - **Background poller** runs every 30 minutes via `launchd` (optional). Hits EasyPost for every active package with a tracking number, writes updates to SQLite, fires a macOS notification on shipped / out-for-delivery / delivered transitions.
 - **CLI** for scripting: `mailroom add-order ...`, `add-tracking ...`, `list`, `rm`, `poll`, `process-inbox`.
@@ -75,7 +75,7 @@ When idle the folder looks empty — the `.mailroom/` subfolder that holds the D
 
 Three equivalent ways, pick whichever fits your muscle memory:
 
-- **Bookmark** <http://localhost:8501> in your browser. Fastest.
+- **Bookmark** <http://localhost:47821> in your browser. Fastest.
 - Double-click [scripts/open-mailroom.command](scripts/open-mailroom.command) in Finder. Opens the tab.
 - Drag `scripts/open-mailroom.command` into your Dock for a one-click launcher.
 

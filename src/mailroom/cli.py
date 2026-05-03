@@ -107,6 +107,7 @@ def poll() -> None:
 @app.command("process-inbox")
 def process_inbox() -> None:
     """Parse every .eml file in the inbox folder."""
+    db.init_schema()
     summary = inbox_mod.process_inbox()
     typer.echo(f"inbox complete: {summary}")
 

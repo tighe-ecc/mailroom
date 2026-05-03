@@ -17,8 +17,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- Include /opt/homebrew/bin so notify.py can find terminal-notifier
+             on Apple Silicon. Without it, notifications fall back to osascript
+             and clicking them opens Script Editor instead of the dashboard. -->
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <key>StartInterval</key>
