@@ -111,6 +111,169 @@
 })();
 </script>
 
+<style>
+  /* Drag-to-merge feedback. Document-level handlers in <script> below add/remove these.
+     daisyUI v4 stores --p as an OKLCH triple (e.g. "49.12% 0.3096 275.75"), so we
+     must wrap with oklch(...) — hsl(var(--p) / α) silently produces an invalid
+     color and the browser falls back to transparent. */
+  .pkg-row > td { transition: background-color 90ms ease, box-shadow 90ms ease; }
+  .pkg-row.pkg-drag-source { opacity: 0.4; }
+  /* Paint the drop-target indicator on the cells, not the <tr>: with the
+     table's border-collapse, a box-shadow on the row gets clipped at the cell
+     edges, so the border appears to vanish. Cell-level inset shadows render
+     reliably and `!important` beats the row's :hover background during drag. */
+  .pkg-row.pkg-drop-target > td {
+    background-color: oklch(var(--p, 60.39% 0.228 269.1) / 0.22) !important;
+    box-shadow:
+      inset 0  2px 0 0 oklch(var(--p, 60.39% 0.228 269.1)),
+      inset 0 -2px 0 0 oklch(var(--p, 60.39% 0.228 269.1));
+  }
+  .pkg-row.pkg-drop-target > td:first-child {
+    box-shadow:
+      inset  2px  0   0 0 oklch(var(--p, 60.39% 0.228 269.1)),
+      inset  0    2px 0 0 oklch(var(--p, 60.39% 0.228 269.1)),
+      inset  0   -2px 0 0 oklch(var(--p, 60.39% 0.228 269.1));
+  }
+  .pkg-row.pkg-drop-target > td:last-child {
+    box-shadow:
+      inset -2px  0   0 0 oklch(var(--p, 60.39% 0.228 269.1)),
+      inset  0    2px 0 0 oklch(var(--p, 60.39% 0.228 269.1)),
+      inset  0   -2px 0 0 oklch(var(--p, 60.39% 0.228 269.1));
+  }
+</style>
+<script>
+(function() {
+  // Document-level so a single binding survives HTMX swaps of #packages-region.
+  let dragSrcRow = null;
+  let dropTargetRow = null;
+
+  function clearTarget() {
+    if (dropTargetRow) {
+      dropTargetRow.classList.remove('pkg-drop-target');
+      dropTargetRow = null;
+    }
+  }
+
+  function endDrag() {
+    if (dragSrcRow) dragSrcRow.classList.remove('pkg-drag-source');
+    clearTarget();
+    dragSrcRow = null;
+  }
+
+  document.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('tr.pkg-row');
+    if (!row) return;
+    dragSrcRow = row;
+    e.dataTransfer.effectAllowed = 'move';
+    // Some browsers require a payload to actually start a drag.
+    e.dataTransfer.setData('text/plain', row.dataset.pkgId);
+    row.classList.add('pkg-drag-source');
+  });
+
+  document.addEventListener('dragend', endDrag);
+
+  function setTarget(row) {
+    if (row === dropTargetRow) return;
+    clearTarget();
+    if (row && row !== dragSrcRow) {
+      dropTargetRow = row;
+      row.classList.add('pkg-drop-target');
+    }
+  }
+
+  // Both dragenter AND dragover must call preventDefault for a drop to be
+  // allowed — and on Firefox/Safari, without preventDefault on dragenter the
+  // browser won't keep firing dragover, which makes the highlight feel "stuck"
+  // mid-drag. We update the target on dragenter (immediate) and re-confirm on
+  // dragover (continuous, in case the row was swapped or the cursor moves
+  // within the same row).
+  document.addEventListener('dragenter', (e) => {
+    if (!dragSrcRow) return;
+    const row = e.target.closest('tr.pkg-row');
+    if (!row || row === dragSrcRow) return;
+    e.preventDefault();
+    setTarget(row);
+  });
+
+  document.addEventListener('dragover', (e) => {
+    if (!dragSrcRow) return;
+    const row = e.target.closest('tr.pkg-row');
+    if (row && row !== dragSrcRow) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setTarget(row);
+    } else {
+      setTarget(null);
+    }
+  });
+
+  document.addEventListener('drop', (e) => {
+    if (!dragSrcRow) return;
+    const row = e.target.closest('tr.pkg-row');
+    if (!row || row === dragSrcRow) {
+      endDrag();
+      return;
+    }
+    e.preventDefault();
+    const srcId = dragSrcRow.dataset.pkgId;
+    const dstId = row.dataset.pkgId;
+    const srcLabel = (dragSrcRow.dataset.pkgDesc || '').trim() || (dragSrcRow.dataset.pkgVendor || '').trim() || `row #${srcId}`;
+    const dstLabel = (row.dataset.pkgDesc || '').trim() || (row.dataset.pkgVendor || '').trim() || `row #${dstId}`;
+    endDrag();
+    if (!confirm(`Combine "${srcLabel}" into "${dstLabel}"?\n\nThe dragged row will be removed and any fields it has that the target is missing will be copied over.`)) {
+      return;
+    }
+    performMerge(srcId, dstId);
+  });
+
+  // Fetch + manual swap (instead of htmx.ajax) so any failure is visible:
+  // unhandled rejections from htmx.ajax are easy to miss, and we want the
+  // user to see a clear error rather than "nothing happened". Mirrors HTMX's
+  // behavior: process [hx-swap-oob="true"] elements first, then swap the
+  // main #packages-region.
+  async function performMerge(srcId, dstId) {
+    let res;
+    try {
+      res = await fetch(`/packages/${srcId}/merge/${dstId}`, {
+        method: 'POST',
+        headers: { 'HX-Request': 'true' },
+      });
+    } catch (err) {
+      alert(`Merge request failed: ${(err && err.message) || err}`);
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      alert(`Merge failed (${res.status}): ${body || res.statusText}`.trim());
+      return;
+    }
+    const html = await res.text();
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+
+    // OOB partials (stats, inbox chip) come first in the response — swap them
+    // by id wherever they live in the document.
+    tmp.querySelectorAll('[hx-swap-oob="true"]').forEach((node) => {
+      if (!node.id) return;
+      const existing = document.getElementById(node.id);
+      if (existing) existing.replaceWith(node);
+    });
+
+    // Main packages region: full outerHTML swap.
+    const newRegion = tmp.querySelector('#packages-region');
+    const oldRegion = document.getElementById('packages-region');
+    if (newRegion && oldRegion) {
+      oldRegion.replaceWith(newRegion);
+      if (window.htmx && typeof window.htmx.process === 'function') {
+        window.htmx.process(newRegion);
+      }
+    } else {
+      alert('Merge succeeded but the table fragment was missing from the response — please refresh.');
+    }
+  }
+})();
+</script>
+
 <dialog id="detail_modal" class="modal">
   <div class="modal-box max-w-2xl">
     <div id="detail-content"></div>

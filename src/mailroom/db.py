@@ -625,6 +625,95 @@ def delete_package(row_id: int, db_path: Path | None = None) -> None:
         conn.execute("DELETE FROM packages WHERE id = ?", (row_id,))
 
 
+# Columns excluded from merge field-fill: identity, lifecycle timestamps, and
+# the per-row tracker error (the destination row's error state is what's still
+# valid; pulling a stale error from the deleted source would be misleading).
+_MERGE_PROTECTED_COLUMNS = {
+    "id",
+    "created_at",
+    "updated_at",
+    "tracker_error",
+    "tracker_error_at",
+}
+
+
+def merge_packages(
+    src_id: int,
+    dst_id: int,
+    db_path: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Combine two rows. Destination wins on any field it already has; missing
+    fields are filled from the source. The source row is deleted.
+
+    Returns ``(src_before, dst_before, dst_after)`` so callers can persist a
+    full audit record — see :func:`log_merge`.
+    """
+    if src_id == dst_id:
+        raise ValueError("cannot merge a row into itself")
+    with connect(db_path) as conn:
+        src = conn.execute("SELECT * FROM packages WHERE id = ?", (src_id,)).fetchone()
+        dst = conn.execute("SELECT * FROM packages WHERE id = ?", (dst_id,)).fetchone()
+        if src is None:
+            raise ValueError(f"source row {src_id} not found")
+        if dst is None:
+            raise ValueError(f"destination row {dst_id} not found")
+        src_d = dict(src)
+        dst_d = dict(dst)
+
+        merged = dict(dst_d)
+        for col, src_val in src_d.items():
+            if col in _MERGE_PROTECTED_COLUMNS:
+                continue
+            if not merged.get(col) and src_val:
+                merged[col] = src_val
+
+        # Delete src first so its tracking_number frees the UNIQUE slot before
+        # we (potentially) write the same value onto dst.
+        conn.execute("DELETE FROM packages WHERE id = ?", (src_id,))
+
+        update_cols = [
+            c for c in merged
+            if c not in {"id", "created_at"} and merged[c] != dst_d.get(c)
+        ]
+        if update_cols:
+            merged["updated_at"] = _now()
+            if "updated_at" not in update_cols:
+                update_cols.append("updated_at")
+            set_clause = ", ".join(f"{c} = ?" for c in update_cols)
+            params = [merged[c] for c in update_cols] + [dst_id]
+            conn.execute(
+                f"UPDATE packages SET {set_clause} WHERE id = ?", params
+            )
+
+    return src_d, dst_d, merged
+
+
+def merge_log_path(db_path: Path | None = None) -> Path:
+    """Where manual-merge audit records are appended (JSONL)."""
+    return (db_path or default_db_path()).parent / "merges.jsonl"
+
+
+def log_merge(
+    src_before: dict[str, Any],
+    dst_before: dict[str, Any],
+    merged_after: dict[str, Any],
+    db_path: Path | None = None,
+) -> None:
+    """Append a JSONL audit record so we can later analyze why find_match
+    didn't catch this duplicate and how to improve it."""
+    path = merge_log_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": _now(),
+        "src": src_before,
+        "dst": dst_before,
+        "merged": merged_after,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, default=str))
+        f.write("\n")
+
+
 def status_counts(db_path: Path | None = None) -> dict[str, int]:
     with connect(db_path) as conn:
         rows = conn.execute(

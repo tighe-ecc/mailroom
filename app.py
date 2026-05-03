@@ -286,6 +286,20 @@ def delete_row(request: Request, row_id: int) -> HTMLResponse:
     return templates.TemplateResponse(request, "_packages.html", _context(request))
 
 
+@app.post("/packages/{src_id}/merge/{dst_id}", response_class=HTMLResponse)
+def merge_rows(request: Request, src_id: int, dst_id: int) -> HTMLResponse:
+    """Combine two rows (drag-and-drop in the dashboard) and append a JSONL
+    audit record so we can later analyze missed auto-dedup cases."""
+    if src_id == dst_id:
+        return HTMLResponse("cannot merge a row into itself", status_code=400)
+    try:
+        src_before, dst_before, merged = db.merge_packages(src_id, dst_id)
+    except ValueError as e:
+        return HTMLResponse(str(e), status_code=404)
+    db.log_merge(src_before, dst_before, merged)
+    return templates.TemplateResponse(request, "_packages.html", _context(request))
+
+
 @app.post("/refresh", response_class=HTMLResponse)
 def refresh(request: Request) -> HTMLResponse:
     poll.poll_once()
