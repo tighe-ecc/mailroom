@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 
 from mailroom import db, easypost, inbox, poll, scrape, watcher
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "feedback-button"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from feedback import note as _feedback_note  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
