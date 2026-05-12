@@ -30,3 +30,12 @@
 - [x] **2026-05-11 10:20 — Bug: Manual updates to the item cards do not save**
   Example: Adding 871354287114 as tracking number to StepperOnline order and then clicking "Save" or CMD + Enter does not update ticket
   _tool: procurement-tracker · source: http://localhost:47821/_
+- [x] **2026-05-12 08:22 — Bug: Status of Delivered should not show destination city**
+  Currently says Torrance, CA, US which is unnecessary
+  _tool: procurement-tracker · source: http://localhost:47821/_
+- [x] **2026-05-12 08:24 — Bug: Get rid of "Remove" button**
+  Unused during normal workflows, keep on card instead
+  _tool: procurement-tracker · source: http://localhost:47821/_
+- [x] **2026-05-12 08:55 — Bug: Updated flag does not turn yellow**
+  Updated ticker increases when Mailroom is open but doesn't automatically turn yellow when exceeding the timer
+  _tool: procurement-tracker · source: http://localhost:47821/_
