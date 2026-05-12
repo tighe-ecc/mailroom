@@ -252,6 +252,20 @@ def update_row(
     final_status = _nn(status) or existing.get("status")
     had_tracking_before = bool(existing.get("tracking_number"))
 
+    # If the user typed a tracking number that already belongs to another row,
+    # the UNIQUE constraint would fire on UPDATE and surface as a 500. Detect
+    # early and render an inline error pointing at the drag-to-merge workflow.
+    if new_tracking and new_tracking != existing.get("tracking_number"):
+        conflict = db.find_match(tracking_number=new_tracking)
+        if conflict and conflict["id"] != row_id:
+            label = conflict.get("description") or conflict.get("vendor") or f"row #{conflict['id']}"
+            return _detail_with_error(
+                request,
+                row_id,
+                f"Tracking number {new_tracking} is already used on “{label}”. "
+                "Drag one row onto the other in the dashboard to combine them.",
+            )
+
     if new_tracking and not had_tracking_before:
         try:
             snap = easypost.create_tracker(new_tracking, carrier=final_carrier)
@@ -280,9 +294,42 @@ def update_row(
     return package_detail(request, row_id)
 
 
+def _detail_with_error(request: Request, row_id: int, message: str) -> HTMLResponse:
+    """Render the detail fragment with an inline error banner above the form."""
+    import json as _json
+    pkg = db.get_package(row_id)
+    if pkg is None:
+        return HTMLResponse("<p class='text-error'>Not found.</p>", status_code=404)
+    events: list[dict] = []
+    if pkg.get("events_json"):
+        try:
+            events = _json.loads(pkg["events_json"])
+        except _json.JSONDecodeError:
+            events = []
+    return templates.TemplateResponse(
+        request,
+        "_detail.html",
+        {"pkg": pkg, "events": events, "update_error": message},
+    )
+
+
 @app.delete("/packages/{row_id}", response_class=HTMLResponse)
 def delete_row(request: Request, row_id: int) -> HTMLResponse:
     db.delete_package(row_id)
+    return templates.TemplateResponse(request, "_packages.html", _context(request))
+
+
+@app.post("/packages/{src_id}/merge/{dst_id}", response_class=HTMLResponse)
+def merge_rows(request: Request, src_id: int, dst_id: int) -> HTMLResponse:
+    """Combine two rows (drag-and-drop in the dashboard) and append a JSONL
+    audit record so we can later analyze missed auto-dedup cases."""
+    if src_id == dst_id:
+        return HTMLResponse("cannot merge a row into itself", status_code=400)
+    try:
+        src_before, dst_before, merged = db.merge_packages(src_id, dst_id)
+    except ValueError as e:
+        return HTMLResponse(str(e), status_code=404)
+    db.log_merge(src_before, dst_before, merged)
     return templates.TemplateResponse(request, "_packages.html", _context(request))
 
 

@@ -48,7 +48,11 @@
         </thead>
         <tbody>
           {% for pkg in packages %}
-          <tr class="align-top hover:bg-base-200/40 cursor-pointer"
+          <tr class="align-top hover:bg-base-200/40 cursor-pointer pkg-row"
+              draggable="true"
+              data-pkg-id="{{ pkg.id }}"
+              data-pkg-desc="{{ pkg.description or '' }}"
+              data-pkg-vendor="{{ pkg.vendor or '' }}"
               hx-get="/packages/{{ pkg.id }}/details"
               hx-target="#detail-content"
               hx-swap="innerHTML"

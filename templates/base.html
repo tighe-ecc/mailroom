@@ -25,12 +25,15 @@
       outline: none;
       transition: background 120ms, border-color 120ms;
     }
-    .detail-inline:hover { border-color: hsl(var(--b3, 0 0% 90%)); }
+    /* daisyUI v4 stores theme color tokens (--b2, --b3, --p, --bc) as OKLCH
+       triples, so they must be wrapped with oklch(...). Using hsl() silently
+       produces an invalid color and the browser falls back to transparent. */
+    .detail-inline:hover { border-color: oklch(var(--b3, 89.59% 0.0103 256.85)); }
     .detail-inline:focus {
-      background: hsl(var(--b2, 0 0% 96%));
-      border-color: hsl(var(--p, 200 100% 50%) / 0.5);
+      background: oklch(var(--b2, 93.55% 0.0107 256.85));
+      border-color: oklch(var(--p, 49.12% 0.3096 275.75) / 0.5);
     }
-    .detail-inline::placeholder { color: hsl(var(--bc, 0 0% 20%) / 0.3); }
+    .detail-inline::placeholder { color: oklch(var(--bc, 27.81% 0.0296 256.85) / 0.3); }
   </style>
 </head>
 <body class="bg-base-200 min-h-screen">
