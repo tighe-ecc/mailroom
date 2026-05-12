@@ -15,6 +15,7 @@ import shutil
 import threading
 import traceback
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from email.message import Message
 from pathlib import Path
 
@@ -127,6 +128,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
     carrier = parsed.carrier
     snap = None
     tracker_error: str | None = None
+    promised_delivery_date = _resolve_delivery_estimate(parsed)
 
     if parsed.tracking_number:
         prior_easypost = existing.get("easypost_id") if existing else None
@@ -169,7 +171,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
             status=status,
             ordered_date=parsed.ordered_date,
             promised_ship_date=parsed.promised_ship_date,
-            promised_delivery_date=parsed.promised_delivery_date,
+            promised_delivery_date=promised_delivery_date,
             tracking_url=parsed.tracking_url,
             sender_domain=sender_domain,
         )
@@ -186,7 +188,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
             status=status,
             ordered_date=parsed.ordered_date,
             promised_ship_date=parsed.promised_ship_date,
-            promised_delivery_date=parsed.promised_delivery_date,
+            promised_delivery_date=promised_delivery_date,
             tracking_url=parsed.tracking_url,
             sender_domain=sender_domain,
         )
@@ -230,6 +232,26 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
         )
 
     return action, row_id
+
+
+def _resolve_delivery_estimate(parsed: parser.ParsedEmail) -> str | None:
+    """Compute promised_delivery_date from a relative lead-time phrase.
+
+    Vendors regularly quote "6-8 weeks" or "ships in 5 business days" instead
+    of an absolute delivery date. The parser extracts that as ``lead_time_days``
+    (upper bound of the range, expressed in calendar days); we anchor it to
+    parsed.ordered_date — which for order_confirmation emails is the moment
+    the order was placed — to produce a concrete date the dashboard can show.
+    """
+    if parsed.promised_delivery_date:
+        return parsed.promised_delivery_date
+    if not parsed.lead_time_days or not parsed.ordered_date:
+        return None
+    try:
+        base = datetime.fromisoformat(parsed.ordered_date).date()
+    except ValueError:
+        return None
+    return (base + timedelta(days=parsed.lead_time_days)).isoformat()
 
 
 def _status_from_signal(signal: str | None, tracking_number: str | None) -> str:
