@@ -147,7 +147,7 @@
   <div class="bg-base-200/60 rounded-lg p-3 text-sm">
     <div>{{ pkg.last_event }}</div>
     <div class="text-xs text-base-content/60 mt-1">
-      {{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{{ pkg.last_event_time|pretty_time }}
+      {% if pkg.status != 'delivered' %}{{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{% endif %}{{ pkg.last_event_time|pretty_time }}
     </div>
   </div>
   {% endif %}
