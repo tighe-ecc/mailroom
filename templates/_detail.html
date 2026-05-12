@@ -167,6 +167,14 @@
   {% endif %}
 
   <div class="mt-6 flex items-center justify-end gap-2">
+    <button class="btn btn-ghost btn-xs text-error"
+            hx-delete="/packages/{{ pkg.id }}"
+            hx-confirm="Remove this entry from the tracker?"
+            hx-target="#packages-region"
+            hx-swap="outerHTML"
+            hx-on::after-request="if (event.detail.successful) detail_modal.close();">
+      Remove
+    </button>
     <div class="text-xs text-base-content/40 mr-auto">Double-click any field to edit · ⌘ + Enter to save</div>
     <button id="detail-save-btn" type="submit" class="btn btn-primary btn-sm invisible">
       Save

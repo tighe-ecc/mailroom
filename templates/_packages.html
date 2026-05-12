@@ -44,7 +44,6 @@
             {{ sort_header('tracking_number', 'Tracking #', 'w-40') }}
             {{ sort_header('est_delivery', 'ETA', 'w-28') }}
             {{ sort_header('last_event_time', 'Latest event') }}
-            <th class="w-20"></th>
           </tr>
         </thead>
         <tbody>
@@ -128,15 +127,6 @@
               {% else %}
                 <span class="text-base-content/40">—</span>
               {% endif %}
-            </td>
-            <td class="text-right" onclick="event.stopPropagation()">
-              <button class="btn btn-ghost btn-xs"
-                      hx-delete="/packages/{{ pkg.id }}"
-                      hx-confirm="Remove this entry from the tracker?"
-                      hx-target="#packages-region"
-                      hx-swap="outerHTML">
-                Remove
-              </button>
             </td>
           </tr>
           {% endfor %}
