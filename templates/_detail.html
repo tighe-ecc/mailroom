@@ -25,7 +25,7 @@
           {{ pkg.status|display_status }}
         </summary>
         <ul class="dropdown-content menu bg-base-100 rounded-box shadow-lg z-20 p-1 mt-2 min-w-[180px] border border-base-300">
-          {% for s in ['ordered', 'confirmed', 'in_fulfillment', 'pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'available_for_pickup', 'return_to_sender', 'failure', 'cancelled', 'error', 'unknown'] %}
+          {% for s in ['ordered', 'confirmed', 'in_fulfillment', 'pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'received', 'available_for_pickup', 'return_to_sender', 'failure', 'cancelled', 'error', 'unknown'] %}
           <li>
             <a class="py-1 px-2" onclick="pickStatus('{{ s }}', '{{ s|display_status }}', '{{ s|status_class }}')">
               <span class="badge badge-{{ s|status_class }} badge-sm">{{ s|display_status }}</span>

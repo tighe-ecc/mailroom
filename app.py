@@ -39,6 +39,7 @@ STATUS_BADGE = {
     "in_transit": "info",
     "out_for_delivery": "warning",
     "delivered": "success",
+    "received": "success",
     "available_for_pickup": "info",
     "return_to_sender": "error",
     "failure": "error",

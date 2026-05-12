@@ -52,13 +52,17 @@ CREATE INDEX IF NOT EXISTS idx_packages_po_number ON packages(po_number);
 -- doesn't run before the column has been added on existing v2 databases.
 """
 
-TERMINAL_STATUSES = {"delivered", "cancelled", "return_to_sender", "failure", "error"}
+TERMINAL_STATUSES = {
+    "delivered", "received", "cancelled", "return_to_sender", "failure", "error",
+}
 
 # Lifecycle ordering. Used to detect regressions — e.g. a late-arriving
 # order-confirmation email should not downgrade an already-shipped row to
 # "confirmed". Values are co-equal across "out_for_delivery" and
 # "available_for_pickup" because they're parallel branches of the same
-# in-flight stage.
+# in-flight stage. "received" sits one rank above "delivered" so the
+# delivered → received transition (user picked it up from the mailroom rack)
+# is treated as forward progress, not a regression.
 STATUS_RANK = {
     "unknown": -1,
     "ordered": 0,
@@ -73,6 +77,7 @@ STATUS_RANK = {
     "failure": 6,
     "cancelled": 6,
     "error": 6,
+    "received": 7,
 }
 
 
