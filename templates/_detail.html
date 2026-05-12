@@ -1,4 +1,10 @@
 {# Detail + inline-edit form. Swapped into #detail-content; modal is opened by the caller. #}
+{% if update_error %}
+<div class="mb-4 bg-error/10 border border-error/40 rounded-lg p-3 text-sm">
+  <div class="font-medium text-error">⚠ Couldn't save</div>
+  <div class="mt-1 text-base-content/80">{{ update_error }}</div>
+</div>
+{% endif %}
 <form id="detail-form"
       hx-post="/packages/{{ pkg.id }}/update"
       hx-target="#detail-content"

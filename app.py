@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from mailroom import db, easypost, inbox, poll, scrape, watcher
+from mailroom import db, easypost, inbox, poll, scrape, settings as mr_settings, watcher
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from feedback import note as _feedback_note  # noqa: E402
@@ -130,6 +130,31 @@ def _context(
         "sort_by": sort,
         "sort_dir": dir.lower(),
         "is_htmx": request.headers.get("hx-request") == "true",
+        "poll_status": _poll_status(),
+    }
+
+
+def _poll_status() -> dict[str, Any]:
+    """Background-poller health for the dashboard header chip."""
+    last = mr_settings.get_last_poll_at()
+    interval = mr_settings.get_poll_interval_seconds()
+    age_seconds: int | None = None
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+            age_seconds = max(0, int((now - last_dt).total_seconds()))
+        except ValueError:
+            age_seconds = None
+    # Stale = haven't heard from the poller in more than ~1.5 × the user's
+    # configured interval. Flags a dead launchd daemon, a crashed poll script,
+    # or an unset MAILROOM_DB path on the daemon side.
+    stale = age_seconds is None or age_seconds > int(interval * 1.5)
+    return {
+        "last_poll_at": last,
+        "age_seconds": age_seconds,
+        "interval_seconds": interval,
+        "stale": stale,
     }
 
 
@@ -253,6 +278,20 @@ def update_row(
     final_status = _nn(status) or existing.get("status")
     had_tracking_before = bool(existing.get("tracking_number"))
 
+    # If the user typed a tracking number that already belongs to another row,
+    # the UNIQUE constraint would fire on UPDATE and surface as a 500. Detect
+    # early and render an inline error pointing at the drag-to-merge workflow.
+    if new_tracking and new_tracking != existing.get("tracking_number"):
+        conflict = db.find_match(tracking_number=new_tracking)
+        if conflict and conflict["id"] != row_id:
+            label = conflict.get("description") or conflict.get("vendor") or f"row #{conflict['id']}"
+            return _detail_with_error(
+                request,
+                row_id,
+                f"Tracking number {new_tracking} is already used on “{label}”. "
+                "Drag one row onto the other in the dashboard to combine them.",
+            )
+
     if new_tracking and not had_tracking_before:
         try:
             snap = easypost.create_tracker(new_tracking, carrier=final_carrier)
@@ -279,6 +318,25 @@ def update_row(
 
     # Return refreshed detail fragment (swaps into #detail-content in the modal).
     return package_detail(request, row_id)
+
+
+def _detail_with_error(request: Request, row_id: int, message: str) -> HTMLResponse:
+    """Render the detail fragment with an inline error banner above the form."""
+    import json as _json
+    pkg = db.get_package(row_id)
+    if pkg is None:
+        return HTMLResponse("<p class='text-error'>Not found.</p>", status_code=404)
+    events: list[dict] = []
+    if pkg.get("events_json"):
+        try:
+            events = _json.loads(pkg["events_json"])
+        except _json.JSONDecodeError:
+            events = []
+    return templates.TemplateResponse(
+        request,
+        "_detail.html",
+        {"pkg": pkg, "events": events, "update_error": message},
+    )
 
 
 @app.post("/packages/{row_id}/receive", response_class=HTMLResponse)
@@ -315,8 +373,24 @@ def merge_rows(request: Request, src_id: int, dst_id: int) -> HTMLResponse:
 
 @app.post("/refresh", response_class=HTMLResponse)
 def refresh(request: Request) -> HTMLResponse:
-    poll.poll_once()
+    # User asked for a refresh — bypass the configured interval gate.
+    poll.poll_once(force=True)
     return templates.TemplateResponse(request, "_packages.html", _context(request))
+
+
+@app.post("/settings/poll_interval", response_class=HTMLResponse)
+def update_poll_interval(
+    request: Request, poll_interval_minutes: int = Form(...)
+) -> HTMLResponse:
+    """Save the user's preferred poll frequency. Returns the OOB-swappable
+    poll-status chip so the header updates without a full page reload."""
+    seconds = max(1, poll_interval_minutes) * 60
+    mr_settings.set_poll_interval_seconds(seconds)
+    return templates.TemplateResponse(
+        request,
+        "_poll_status.html",
+        {"poll_status": _poll_status()},
+    )
 
 
 @app.post("/inbox/process", response_class=HTMLResponse)

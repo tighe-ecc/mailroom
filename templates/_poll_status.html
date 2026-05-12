@@ -1,0 +1,28 @@
+{# Background-poller health chip in the dashboard header.
+   hx-swap-oob: emitted by /settings/poll_interval so the header re-renders
+   when the user edits the frequency, without reloading the table. #}
+<div id="poll-status" hx-swap-oob="true"
+     class="flex items-center gap-2 text-xs text-base-content/60">
+  {% set ps = poll_status %}
+  {% if ps.stale %}
+    <span class="badge badge-warning badge-sm gap-1" title="Last successful poll: {{ ps.last_poll_at or 'never' }}">
+      <span class="w-1.5 h-1.5 rounded-full bg-warning-content/70"></span>
+      Background updates stale
+    </span>
+  {% else %}
+    <span class="badge badge-ghost badge-sm gap-1" title="Last successful poll: {{ ps.last_poll_at }}">
+      <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+      Updated
+      {%- if ps.age_seconds is not none %}
+        {% if ps.age_seconds < 60 %} just now
+        {% elif ps.age_seconds < 3600 %} {{ (ps.age_seconds // 60) }}m ago
+        {% else %} {{ (ps.age_seconds // 3600) }}h ago
+        {% endif %}
+      {%- endif %}
+    </span>
+  {% endif %}
+  <button class="link link-hover" onclick="settings_modal.showModal()" type="button"
+          title="Configure background-update interval">
+    every {{ (ps.interval_seconds // 60) }}m ⚙
+  </button>
+</div>
