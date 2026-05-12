@@ -252,6 +252,20 @@ def update_row(
     final_status = _nn(status) or existing.get("status")
     had_tracking_before = bool(existing.get("tracking_number"))
 
+    # If the user typed a tracking number that already belongs to another row,
+    # the UNIQUE constraint would fire on UPDATE and surface as a 500. Detect
+    # early and render an inline error pointing at the drag-to-merge workflow.
+    if new_tracking and new_tracking != existing.get("tracking_number"):
+        conflict = db.find_match(tracking_number=new_tracking)
+        if conflict and conflict["id"] != row_id:
+            label = conflict.get("description") or conflict.get("vendor") or f"row #{conflict['id']}"
+            return _detail_with_error(
+                request,
+                row_id,
+                f"Tracking number {new_tracking} is already used on “{label}”. "
+                "Drag one row onto the other in the dashboard to combine them.",
+            )
+
     if new_tracking and not had_tracking_before:
         try:
             snap = easypost.create_tracker(new_tracking, carrier=final_carrier)
@@ -278,6 +292,25 @@ def update_row(
 
     # Return refreshed detail fragment (swaps into #detail-content in the modal).
     return package_detail(request, row_id)
+
+
+def _detail_with_error(request: Request, row_id: int, message: str) -> HTMLResponse:
+    """Render the detail fragment with an inline error banner above the form."""
+    import json as _json
+    pkg = db.get_package(row_id)
+    if pkg is None:
+        return HTMLResponse("<p class='text-error'>Not found.</p>", status_code=404)
+    events: list[dict] = []
+    if pkg.get("events_json"):
+        try:
+            events = _json.loads(pkg["events_json"])
+        except _json.JSONDecodeError:
+            events = []
+    return templates.TemplateResponse(
+        request,
+        "_detail.html",
+        {"pkg": pkg, "events": events, "update_error": message},
+    )
 
 
 @app.delete("/packages/{row_id}", response_class=HTMLResponse)

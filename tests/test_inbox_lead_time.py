@@ -41,25 +41,31 @@ def _parsed(
 class ResolveDeliveryEstimateTests(unittest.TestCase):
     def test_absolute_date_passes_through(self):
         p = _parsed(promised_delivery_date="2026-05-20", lead_time_days=14)
-        self.assertEqual(inbox._resolve_delivery_estimate(p), "2026-05-20")
+        self.assertEqual(
+            inbox._resolve_delivery_estimate(p, "2026-05-06"), "2026-05-20"
+        )
 
-    def test_lead_time_anchored_to_order_date(self):
-        p = _parsed(ordered_date="2026-05-06", lead_time_days=56)  # 6-8 weeks => 56
-        self.assertEqual(inbox._resolve_delivery_estimate(p), "2026-07-01")
+    def test_lead_time_anchored_to_supplied_anchor(self):
+        p = _parsed(lead_time_days=56)  # 6-8 weeks => 56
+        self.assertEqual(
+            inbox._resolve_delivery_estimate(p, "2026-05-06"), "2026-07-01"
+        )
 
     def test_short_business_lead_time(self):
         # "ships in 3 business days" → LLM normalizes to ~5 calendar days
-        p = _parsed(ordered_date="2026-05-06", lead_time_days=5)
-        self.assertEqual(inbox._resolve_delivery_estimate(p), "2026-05-11")
+        p = _parsed(lead_time_days=5)
+        self.assertEqual(
+            inbox._resolve_delivery_estimate(p, "2026-05-06"), "2026-05-11"
+        )
 
-    def test_no_order_date_means_no_estimate(self):
+    def test_no_anchor_means_no_estimate(self):
         # Without an anchor we have nothing to add the lead time to.
-        p = _parsed(ordered_date=None, lead_time_days=56)
-        self.assertIsNone(inbox._resolve_delivery_estimate(p))
+        p = _parsed(lead_time_days=56)
+        self.assertIsNone(inbox._resolve_delivery_estimate(p, None))
 
     def test_no_lead_time_and_no_promised_returns_none(self):
-        p = _parsed(ordered_date="2026-05-06")
-        self.assertIsNone(inbox._resolve_delivery_estimate(p))
+        p = _parsed()
+        self.assertIsNone(inbox._resolve_delivery_estimate(p, "2026-05-06"))
 
 
 class ParserLeadTimeCoercionTests(unittest.TestCase):
