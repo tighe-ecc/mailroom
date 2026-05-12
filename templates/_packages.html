@@ -121,7 +121,7 @@
               {% if pkg.last_event %}
                 <div class="truncate">{{ pkg.last_event }}</div>
                 <div class="text-xs text-base-content/60 mt-0.5">
-                  {{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{{ pkg.last_event_time|pretty_time }}
+                  {% if pkg.status != 'delivered' %}{{ pkg.last_event_location or '' }}{% if pkg.last_event_location and pkg.last_event_time %} · {% endif %}{% endif %}{{ pkg.last_event_time|pretty_time }}
                 </div>
               {% elif pkg.ordered_date %}
                 <span class="text-base-content/60">Ordered {{ pkg.ordered_date|pretty_date }}</span>
