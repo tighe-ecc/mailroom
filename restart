@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LABEL="com.tighe.mailroom.gui"
+SERVICE="gui/$(id -u)/${LABEL}"
+URL="http://127.0.0.1:47821/"
+
+launchctl kickstart -k "${SERVICE}"
+
+for _ in $(seq 1 20); do
+    pid="$(launchctl list | awk -v l="${LABEL}" '$3 == l { print $1 }')"
+    if [[ "${pid}" =~ ^[0-9]+$ ]] && curl -fsS -o /dev/null "${URL}" 2>/dev/null; then
+        echo "mailroom up — pid ${pid}, ${URL}"
+        exit 0
+    fi
+    sleep 0.25
+done
+
+echo "mailroom did not come back up; check /tmp/mailroom-gui.log" >&2
+exit 1
