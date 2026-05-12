@@ -103,16 +103,44 @@ def _decode_bytes(part: Message) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
-def _load_eml(path: Path) -> tuple[str, str, str]:
+def _load_eml(path: Path) -> tuple[str, str, str, str | None]:
     with path.open("rb") as f:
         msg = email.message_from_binary_file(f, policy=email.policy.default)
     subject = (msg.get("Subject") or "").strip()
     sender = (msg.get("From") or "").strip()
     body = _body_text(msg)
-    return subject, sender, body
+    email_date = _header_date(msg.get("Date"))
+    return subject, sender, body, email_date
 
 
-def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tuple[str, int]:
+def _header_date(raw: str | None) -> str | None:
+    """Parse an RFC 2822 Date header into a YYYY-MM-DD string.
+
+    The email Date header is the authoritative timestamp for *when the email
+    was sent*. For an order-confirmation email, that's the moment the vendor
+    acknowledged the order — which we use as the order date in preference to
+    LLM-extracted dates that often pick up promised-ship or quote-validity
+    dates instead (StepperOnline confirmations e.g. include a "Sun Jul 5"
+    validity date in the body that the LLM was using as ordered_date).
+    """
+    if not raw:
+        return None
+    from email.utils import parsedate_to_datetime
+
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    return dt.date().isoformat()
+
+
+def _apply(
+    parsed: parser.ParsedEmail,
+    sender_domain: str | None = None,
+    email_date: str | None = None,
+) -> tuple[str, int]:
     """Create or update a row from a ParsedEmail. Returns (action, row_id)."""
     existing = db.find_match(
         tracking_number=parsed.tracking_number,
@@ -127,6 +155,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
     carrier = parsed.carrier
     snap = None
     tracker_error: str | None = None
+    ordered_date = _resolve_ordered_date(parsed, email_date)
 
     if parsed.tracking_number:
         prior_easypost = existing.get("easypost_id") if existing else None
@@ -167,7 +196,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
             carrier=carrier,
             easypost_id=easypost_id,
             status=status,
-            ordered_date=parsed.ordered_date,
+            ordered_date=ordered_date,
             promised_ship_date=parsed.promised_ship_date,
             promised_delivery_date=parsed.promised_delivery_date,
             tracking_url=parsed.tracking_url,
@@ -184,7 +213,7 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
             carrier=carrier,
             easypost_id=easypost_id,
             status=status,
-            ordered_date=parsed.ordered_date,
+            ordered_date=ordered_date,
             promised_ship_date=parsed.promised_ship_date,
             promised_delivery_date=parsed.promised_delivery_date,
             tracking_url=parsed.tracking_url,
@@ -232,7 +261,13 @@ def _apply(parsed: parser.ParsedEmail, sender_domain: str | None = None) -> tupl
     return action, row_id
 
 
-def _status_from_signal(signal: str | None, tracking_number: str | None) -> str:
+def _resolve_ordered_date(parsed: parser.ParsedEmail, email_date: str | None) -> str | None:
+    """Choose the ordered_date to write. Email Date header wins on order
+    confirmations; LLM extraction is the fallback for shipping confirmations
+    (where the email Date is the ship date, not the order date)."""
+    if parsed.kind == "order_confirmation" and email_date:
+        return email_date
+    return parsed.ordered_date
     if signal == "shipped" or (tracking_number and signal is None):
         return "pre_transit"
     if signal in {"ordered", "confirmed", "in_fulfillment"}:
@@ -261,7 +296,7 @@ def _process_inbox_locked() -> dict[str, int]:
             continue
         summary["seen"] += 1
         try:
-            subject, sender, body = _load_eml(path)
+            subject, sender, body, email_date = _load_eml(path)
             if not body:
                 raise ValueError("could not extract body text from .eml")
             parsed = parser.parse_email(subject, sender, body)
@@ -276,7 +311,9 @@ def _process_inbox_locked() -> dict[str, int]:
                 )
                 continue
             sender_domain = db.extract_sender_domain(sender)
-            action, row_id = _apply(parsed, sender_domain=sender_domain)
+            action, row_id = _apply(
+                parsed, sender_domain=sender_domain, email_date=email_date
+            )
             summary[action] += 1
             shutil.move(str(path), str(dirs["processed"] / path.name))
             log.info("%s row %s from %s: %s", action, row_id, path.name, asdict(parsed))
