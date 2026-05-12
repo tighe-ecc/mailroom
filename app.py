@@ -146,10 +146,11 @@ def _poll_status() -> dict[str, Any]:
             age_seconds = max(0, int((now - last_dt).total_seconds()))
         except ValueError:
             age_seconds = None
-    # Stale = haven't heard from the poller in more than ~1.5 × the user's
-    # configured interval. Flags a dead launchd daemon, a crashed poll script,
-    # or an unset MAILROOM_DB path on the daemon side.
-    stale = age_seconds is None or age_seconds > int(interval * 1.5)
+    # Stale = haven't heard from the poller within the configured interval plus
+    # a 60-second grace period (avoids a single-second flap right at the edge).
+    # Flags a dead launchd daemon, a crashed poll script, or an unset
+    # MAILROOM_DB path on the daemon side.
+    stale = age_seconds is None or age_seconds > interval + 60
     return {
         "last_poll_at": last,
         "age_seconds": age_seconds,
@@ -386,6 +387,16 @@ def update_poll_interval(
     poll-status chip so the header updates without a full page reload."""
     seconds = max(1, poll_interval_minutes) * 60
     mr_settings.set_poll_interval_seconds(seconds)
+    return templates.TemplateResponse(
+        request,
+        "_poll_status.html",
+        {"poll_status": _poll_status()},
+    )
+
+
+@app.get("/poll_status", response_class=HTMLResponse)
+def poll_status_fragment(request: Request) -> HTMLResponse:
+    """Return the poll-status chip partial so it can self-refresh via HTMX."""
     return templates.TemplateResponse(
         request,
         "_poll_status.html",

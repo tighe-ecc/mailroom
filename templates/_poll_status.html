@@ -2,6 +2,7 @@
    hx-swap-oob: emitted by /settings/poll_interval so the header re-renders
    when the user edits the frequency, without reloading the table. #}
 <div id="poll-status" hx-swap-oob="true"
+     hx-get="/poll_status" hx-trigger="every 30s" hx-swap="outerHTML"
      class="flex items-center gap-2 text-xs text-base-content/60">
   {% set ps = poll_status %}
   {% if ps.stale %}
