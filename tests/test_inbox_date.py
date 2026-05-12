@@ -25,6 +25,7 @@ def _parsed(kind: str, ordered_date: str | None = None) -> parser.ParsedEmail:
         ordered_date=ordered_date,
         promised_ship_date=None,
         promised_delivery_date=None,
+        lead_time_days=None,
         tracking_number=None,
         carrier=None,
         tracking_url=None,

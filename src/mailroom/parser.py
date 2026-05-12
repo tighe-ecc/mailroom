@@ -36,6 +36,7 @@ Respond with a single JSON object matching this schema exactly:
   "ordered_date": string | null,        // YYYY-MM-DD when possible
   "promised_ship_date": string | null,  // YYYY-MM-DD
   "promised_delivery_date": string | null, // YYYY-MM-DD
+  "lead_time_days": number | null,      // estimated total calendar days from order to delivery, when the email gives only a relative phrase (e.g. "6-8 weeks" -> 56, "ships in 3 business days" -> 5). Use the upper bound of any range. Null when an absolute promised_delivery_date is given.
   "tracking_number": string | null,     // carrier tracking # if present in email
   "carrier": string | null,             // "UPS", "FedEx", "USPS", "DHLExpress", "AmazonMws", etc.
   "tracking_url": string | null,        // direct carrier/vendor tracking URL from the email, if present. Prefer the raw destination URL over Microsoft safelinks wrappers.
@@ -52,7 +53,8 @@ confidence<=0.2; leave other fields null.
 - "shipped" = a tracking number and/or carrier handoff is mentioned.
 - Prefer shipping_confirmation over order_confirmation if both signals are present.
 - Dates should be ISO format. If only a relative phrase is given ("ships in 3 \
-business days"), leave the field null.
+business days", "6-8 weeks lead time"), leave the date fields null and populate \
+lead_time_days instead so the dashboard can compute an estimated delivery date.
 - Do not invent tracking numbers or dates. If unsure, use null.
 - Keep item_description under ~80 characters.
 """
@@ -68,6 +70,7 @@ class ParsedEmail:
     ordered_date: str | None
     promised_ship_date: str | None
     promised_delivery_date: str | None
+    lead_time_days: int | None
     tracking_number: str | None
     carrier: str | None
     tracking_url: str | None
@@ -112,6 +115,15 @@ def _coerce(payload: dict[str, Any]) -> ParsedEmail:
     if status_signal not in {"ordered", "confirmed", "in_fulfillment", "shipped", None}:
         status_signal = None
 
+    lead_time_days: int | None
+    raw_lead = payload.get("lead_time_days")
+    try:
+        lead_time_days = int(raw_lead) if raw_lead is not None else None
+    except (TypeError, ValueError):
+        lead_time_days = None
+    if lead_time_days is not None and (lead_time_days <= 0 or lead_time_days > 365):
+        lead_time_days = None
+
     return ParsedEmail(
         kind=kind,
         vendor=_str("vendor"),
@@ -121,6 +133,7 @@ def _coerce(payload: dict[str, Any]) -> ParsedEmail:
         ordered_date=_str("ordered_date"),
         promised_ship_date=_str("promised_ship_date"),
         promised_delivery_date=_str("promised_delivery_date"),
+        lead_time_days=lead_time_days,
         tracking_number=_str("tracking_number"),
         carrier=_str("carrier"),
         tracking_url=_str("tracking_url"),

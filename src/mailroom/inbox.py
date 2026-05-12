@@ -15,6 +15,7 @@ import shutil
 import threading
 import traceback
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from email.message import Message
 from pathlib import Path
 
@@ -156,6 +157,11 @@ def _apply(
     snap = None
     tracker_error: str | None = None
     ordered_date = _resolve_ordered_date(parsed, email_date)
+    # _resolve_delivery_estimate reads parsed.ordered_date as its anchor; if the
+    # email Date header gave us a better one, prefer that for the lead-time math
+    # too so "6-8 weeks from when this email was sent" lines up with the date
+    # we just decided to store.
+    promised_delivery_date = _resolve_delivery_estimate(parsed, ordered_date)
 
     if parsed.tracking_number:
         prior_easypost = existing.get("easypost_id") if existing else None
@@ -198,7 +204,7 @@ def _apply(
             status=status,
             ordered_date=ordered_date,
             promised_ship_date=parsed.promised_ship_date,
-            promised_delivery_date=parsed.promised_delivery_date,
+            promised_delivery_date=promised_delivery_date,
             tracking_url=parsed.tracking_url,
             sender_domain=sender_domain,
         )
@@ -215,7 +221,7 @@ def _apply(
             status=status,
             ordered_date=ordered_date,
             promised_ship_date=parsed.promised_ship_date,
-            promised_delivery_date=parsed.promised_delivery_date,
+            promised_delivery_date=promised_delivery_date,
             tracking_url=parsed.tracking_url,
             sender_domain=sender_domain,
         )
@@ -268,6 +274,32 @@ def _resolve_ordered_date(parsed: parser.ParsedEmail, email_date: str | None) ->
     if parsed.kind == "order_confirmation" and email_date:
         return email_date
     return parsed.ordered_date
+
+
+def _resolve_delivery_estimate(
+    parsed: parser.ParsedEmail, anchor_date: str | None
+) -> str | None:
+    """Compute promised_delivery_date from a relative lead-time phrase.
+
+    Vendors regularly quote "6-8 weeks" or "ships in 5 business days" instead
+    of an absolute delivery date. The parser extracts that as ``lead_time_days``
+    (upper bound of the range, expressed in calendar days); we anchor it to
+    ``anchor_date`` — typically the ordered_date we just resolved, which on
+    order-confirmation emails comes from the Date header — to produce a
+    concrete date the dashboard can show.
+    """
+    if parsed.promised_delivery_date:
+        return parsed.promised_delivery_date
+    if not parsed.lead_time_days or not anchor_date:
+        return None
+    try:
+        base = datetime.fromisoformat(anchor_date).date()
+    except ValueError:
+        return None
+    return (base + timedelta(days=parsed.lead_time_days)).isoformat()
+
+
+def _status_from_signal(signal: str | None, tracking_number: str | None) -> str:
     if signal == "shipped" or (tracking_number and signal is None):
         return "pre_transit"
     if signal in {"ordered", "confirmed", "in_fulfillment"}:
