@@ -273,8 +273,20 @@ def _apply(
 # effectively the order placement time). Tuned so the LLM has to be near-certain
 # the body really labels the date as the order date — the failure mode we're
 # guarding against is the LLM tagging a quote-validity or promised-ship date as
-# ordered_date (StepperOnline "Sun Jul 5" / "Feb 5" cases).
+# ordered_date.
 HIGH_BODY_DATE_CONFIDENCE = 0.9
+
+# Plausibility window: an order_confirmation's ordered_date must be close to the
+# email Date header (the moment the vendor acknowledged the order). Anything
+# noticeably in the future is mechanically impossible; anything very far in the
+# past is almost certainly a misparse. Catches DD/MM-vs-MM/DD format misreads
+# the LLM can't self-diagnose: StepperOnline writes "Date Added: 07/05/2026"
+# for an order placed May 7 (DD/MM); the LLM confidently parses it as July 5
+# (MM/DD) with 0.95 confidence and would clear the confidence gate. The
+# date-sanity gate catches it because Jul 5 sits 60 days in the future of the
+# May 6 email header.
+MAX_BODY_DATE_DAYS_FUTURE = 3    # acknowledgements going out before the order is rare
+MAX_BODY_DATE_DAYS_PAST = 60     # generous: backfilled / forwarded confirmations do exist
 
 
 def _resolve_ordered_date(parsed: parser.ParsedEmail, email_date: str | None) -> str | None:
@@ -285,18 +297,33 @@ def _resolve_ordered_date(parsed: parser.ParsedEmail, email_date: str | None) ->
 
     For order confirmations: default to the email Date header (a safe lower
     bound on when the order was placed). Promote the LLM's body extraction
-    only when its self-rated ordered_date_confidence is very high — the body
-    routinely contains quote-validity and promised-ship dates that the LLM
-    used to mis-tag as the order date.
+    only when *both* the LLM is near-certain (ordered_date_confidence) and the
+    extracted date falls within a plausible window of the email Date header.
     """
     if parsed.kind != "order_confirmation":
         return parsed.ordered_date
     if (
         parsed.ordered_date
         and parsed.ordered_date_confidence >= HIGH_BODY_DATE_CONFIDENCE
+        and _within_plausible_window(parsed.ordered_date, email_date)
     ):
         return parsed.ordered_date
     return email_date or parsed.ordered_date
+
+
+def _within_plausible_window(body_date: str, email_date: str | None) -> bool:
+    """True iff body_date is close enough to email_date that it could plausibly
+    be the same order's placement date. Wide-open if email_date is unavailable
+    — no anchor to compare against, so fall back to trusting the LLM."""
+    if not email_date:
+        return True
+    try:
+        b = datetime.fromisoformat(body_date).date()
+        e = datetime.fromisoformat(email_date).date()
+    except ValueError:
+        return True
+    delta_days = (b - e).days
+    return -MAX_BODY_DATE_DAYS_PAST <= delta_days <= MAX_BODY_DATE_DAYS_FUTURE
 
 
 def _resolve_delivery_estimate(

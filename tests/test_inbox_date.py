@@ -95,6 +95,50 @@ class ResolveOrderedDateTests(unittest.TestCase):
             inbox._resolve_ordered_date(parsed, "2026-04-15"), "2026-04-10"
         )
 
+    def test_high_confidence_far_future_body_date_rejected(self):
+        """The DD/MM-vs-MM/DD misread case: StepperOnline "Date Added: 07/05/2026"
+        is May 7 (DD/MM), but the LLM confidently parses it as July 5 (MM/DD)
+        with 0.95 confidence. Without the date-sanity gate, the bad date wins;
+        with it, the email Date header wins because Jul 5 sits 60 days in the
+        future of the May 6 email."""
+        parsed = _parsed(
+            "order_confirmation", ordered_date="2026-07-05", ordered_date_confidence=0.95
+        )
+        self.assertEqual(
+            inbox._resolve_ordered_date(parsed, "2026-05-06"), "2026-05-06"
+        )
+
+    def test_high_confidence_far_past_body_date_rejected(self):
+        """A confident extraction months in the past is also implausible — the
+        StepperOnline 299907 case where the LLM had picked '2026-02-05' from an
+        email actually sent on 2026-05-02."""
+        parsed = _parsed(
+            "order_confirmation", ordered_date="2026-02-05", ordered_date_confidence=0.95
+        )
+        self.assertEqual(
+            inbox._resolve_ordered_date(parsed, "2026-05-02"), "2026-05-02"
+        )
+
+    def test_high_confidence_one_day_back_accepted(self):
+        """The common, legitimate case: the email Date header is one day after
+        the actual order placement (vendor's nightly batch send). The body
+        extraction is the more accurate date and must still win."""
+        parsed = _parsed(
+            "order_confirmation", ordered_date="2026-04-27", ordered_date_confidence=0.95
+        )
+        self.assertEqual(
+            inbox._resolve_ordered_date(parsed, "2026-04-28"), "2026-04-27"
+        )
+
+    def test_high_confidence_no_header_skips_window_check(self):
+        """No email_date to anchor against → trust the body extraction. We have
+        no way to evaluate plausibility, and rejecting all body dates here would
+        leave ordered_date null."""
+        parsed = _parsed(
+            "order_confirmation", ordered_date="2026-07-05", ordered_date_confidence=0.95
+        )
+        self.assertEqual(inbox._resolve_ordered_date(parsed, None), "2026-07-05")
+
     def test_shipping_confirmation_with_no_parsed_date_stays_none(self):
         parsed = _parsed("shipping_confirmation", ordered_date=None)
         self.assertIsNone(inbox._resolve_ordered_date(parsed, "2026-04-15"))
