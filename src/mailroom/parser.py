@@ -33,7 +33,8 @@ Respond with a single JSON object matching this schema exactly:
   "order_number": string | null,        // vendor's order/invoice/reference #
   "po_number": string | null,           // buyer-side PO if one appears
   "item_description": string | null,    // short human summary of what was ordered
-  "ordered_date": string | null,        // YYYY-MM-DD when possible
+  "ordered_date": string | null,        // YYYY-MM-DD when possible — the date the order was actually placed, as stated in the email body
+  "ordered_date_confidence": number,    // 0.0 to 1.0, how sure you are that ordered_date is the *order placement date* (not a promised-ship date, a quote-validity date, or a customer-since date). Be conservative: 0.95+ only when the body explicitly labels the date as the order date ("Order date:", "Placed on:", "Order placed: …"). Use ≤0.5 when you inferred the date from a header like "Date received:" or any field whose role you're unsure of.
   "promised_ship_date": string | null,  // YYYY-MM-DD
   "promised_delivery_date": string | null, // YYYY-MM-DD
   "lead_time_days": number | null,      // estimated total calendar days from order to delivery, when the email gives only a relative phrase (e.g. "6-8 weeks" -> 56, "ships in 3 business days" -> 5). Use the upper bound of any range. Null when an absolute promised_delivery_date is given.
@@ -57,6 +58,9 @@ business days", "6-8 weeks lead time"), leave the date fields null and populate 
 lead_time_days instead so the dashboard can compute an estimated delivery date.
 - Do not invent tracking numbers or dates. If unsure, use null.
 - Keep item_description under ~80 characters.
+- ordered_date_confidence is required even when ordered_date is null (use 0.0). \
+The downstream pipeline falls back to the email Date header when this confidence \
+is below a threshold, so honest low scores are valuable — don't anchor at 0.9.
 """
 
 
@@ -68,6 +72,7 @@ class ParsedEmail:
     po_number: str | None
     item_description: str | None
     ordered_date: str | None
+    ordered_date_confidence: float
     promised_ship_date: str | None
     promised_delivery_date: str | None
     lead_time_days: int | None
@@ -124,6 +129,12 @@ def _coerce(payload: dict[str, Any]) -> ParsedEmail:
     if lead_time_days is not None and (lead_time_days <= 0 or lead_time_days > 365):
         lead_time_days = None
 
+    try:
+        ordered_date_confidence = float(payload.get("ordered_date_confidence") or 0.0)
+    except (TypeError, ValueError):
+        ordered_date_confidence = 0.0
+    ordered_date_confidence = max(0.0, min(1.0, ordered_date_confidence))
+
     return ParsedEmail(
         kind=kind,
         vendor=_str("vendor"),
@@ -131,6 +142,7 @@ def _coerce(payload: dict[str, Any]) -> ParsedEmail:
         po_number=_str("po_number"),
         item_description=_str("item_description"),
         ordered_date=_str("ordered_date"),
+        ordered_date_confidence=ordered_date_confidence,
         promised_ship_date=_str("promised_ship_date"),
         promised_delivery_date=_str("promised_delivery_date"),
         lead_time_days=lead_time_days,

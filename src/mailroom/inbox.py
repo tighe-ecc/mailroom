@@ -267,13 +267,36 @@ def _apply(
     return action, row_id
 
 
+# Trust the body-extracted ordered_date only when the LLM self-rated it this
+# high. Anything less and the email Date header wins on order_confirmation
+# emails (Date header = "when this email was sent", which for an order ack is
+# effectively the order placement time). Tuned so the LLM has to be near-certain
+# the body really labels the date as the order date — the failure mode we're
+# guarding against is the LLM tagging a quote-validity or promised-ship date as
+# ordered_date (StepperOnline "Sun Jul 5" / "Feb 5" cases).
+HIGH_BODY_DATE_CONFIDENCE = 0.9
+
+
 def _resolve_ordered_date(parsed: parser.ParsedEmail, email_date: str | None) -> str | None:
-    """Choose the ordered_date to write. Email Date header wins on order
-    confirmations; LLM extraction is the fallback for shipping confirmations
-    (where the email Date is the ship date, not the order date)."""
-    if parsed.kind == "order_confirmation" and email_date:
-        return email_date
-    return parsed.ordered_date
+    """Choose the ordered_date to write.
+
+    For shipping confirmations: use the LLM's body extraction — the email Date
+    header is the ship date, not the order date.
+
+    For order confirmations: default to the email Date header (a safe lower
+    bound on when the order was placed). Promote the LLM's body extraction
+    only when its self-rated ordered_date_confidence is very high — the body
+    routinely contains quote-validity and promised-ship dates that the LLM
+    used to mis-tag as the order date.
+    """
+    if parsed.kind != "order_confirmation":
+        return parsed.ordered_date
+    if (
+        parsed.ordered_date
+        and parsed.ordered_date_confidence >= HIGH_BODY_DATE_CONFIDENCE
+    ):
+        return parsed.ordered_date
+    return email_date or parsed.ordered_date
 
 
 def _resolve_delivery_estimate(
