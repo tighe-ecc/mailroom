@@ -61,6 +61,18 @@
               <span class="badge badge-{{ pkg.status|status_class }} badge-sm">
                 {{ pkg.status|display_status }}
               </span>
+              {% if pkg.status == 'delivered' %}
+              <label class="mt-1.5 flex items-center gap-1.5 text-xs cursor-pointer w-fit"
+                     onclick="event.stopPropagation()"
+                     title="Tick once you've physically picked the package up from the rack">
+                <input type="checkbox"
+                       class="checkbox checkbox-xs checkbox-success"
+                       hx-post="/packages/{{ pkg.id }}/receive"
+                       hx-target="#packages-region"
+                       hx-swap="outerHTML" />
+                <span class="text-base-content/70">Received?</span>
+              </label>
+              {% endif %}
             </td>
             <td>
               <div class="font-medium truncate">{{ pkg.description or '—' }}</div>

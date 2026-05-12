@@ -281,6 +281,18 @@ def update_row(
     return package_detail(request, row_id)
 
 
+@app.post("/packages/{row_id}/receive", response_class=HTMLResponse)
+def mark_received(request: Request, row_id: int) -> HTMLResponse:
+    """Mark a delivered row as received — the user physically picked it up.
+    Refreshes the table so the row drops out of the default view (received
+    is hidden unless "Show received" is on)."""
+    existing = db.get_package(row_id)
+    if existing is None:
+        return HTMLResponse("<p class='text-error'>Not found.</p>", status_code=404)
+    db.update_package(row_id=row_id, status="received")
+    return templates.TemplateResponse(request, "_packages.html", _context(request))
+
+
 @app.delete("/packages/{row_id}", response_class=HTMLResponse)
 def delete_row(request: Request, row_id: int) -> HTMLResponse:
     db.delete_package(row_id)

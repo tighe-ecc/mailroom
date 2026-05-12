@@ -34,7 +34,7 @@
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-lg font-medium">Packages and orders</h2>
   <label class="label cursor-pointer gap-3">
-    <span class="label-text text-sm">Show delivered</span>
+    <span class="label-text text-sm">Show received &amp; finished</span>
     <input type="checkbox" class="toggle toggle-sm"
            hx-get="/packages"
            hx-vals='js:{include_delivered: event.target.checked, sort: "{{ sort_by }}", dir: "{{ sort_dir }}"}'
