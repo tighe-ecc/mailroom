@@ -4,6 +4,7 @@
 <header class="flex items-start justify-between mb-8">
   <div>
     <h1 class="text-3xl font-semibold tracking-tight">Mailroom</h1>
+    {% include "_poll_status.html" %}
   </div>
   <div class="flex items-center gap-2">
     {% include "_inbox_chip.html" %}
@@ -273,6 +274,31 @@
   }
 })();
 </script>
+
+<dialog id="settings_modal" class="modal">
+  <div class="modal-box max-w-sm">
+    <h3 class="text-lg font-semibold mb-1">Background updates</h3>
+    <p class="text-sm text-base-content/60 mb-4">
+      Mailroom polls EasyPost (and falls back to scraping carrier pages) in the background.
+      The launchd daemon fires every {{ (poll_status.interval_seconds // 60) }} minutes today;
+      lowering this value skips polls until the gap elapses again.
+    </p>
+    <form hx-post="/settings/poll_interval"
+          hx-target="#poll-status"
+          hx-swap="outerHTML"
+          hx-on::after-request="if (event.detail.successful) settings_modal.close();">
+      <label class="label py-1"><span class="label-text">Minimum minutes between polls</span></label>
+      <input name="poll_interval_minutes" type="number" min="1" max="1440"
+             value="{{ (poll_status.interval_seconds // 60) }}"
+             class="input input-bordered w-full" required />
+      <div class="modal-action">
+        <button type="button" class="btn btn-ghost" onclick="settings_modal.close()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
 
 <dialog id="detail_modal" class="modal">
   <div class="modal-box max-w-2xl">

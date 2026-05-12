@@ -3,6 +3,7 @@
 {% if is_htmx %}
   {% include "_stats.html" %}
   {% include "_inbox_chip.html" %}
+  {% include "_poll_status.html" %}
 {% endif %}
 
 {% set delivered_q = 'true' if include_delivered else 'false' %}

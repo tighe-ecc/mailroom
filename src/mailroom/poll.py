@@ -11,14 +11,34 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 
-from . import db, easypost, inbox, notify, scrape
+from . import db, easypost, inbox, notify, scrape, settings
 
 log = logging.getLogger(__name__)
 
 
 def _skip_status(status: str | None) -> bool:
     return status in easypost.TERMINAL_STATUSES
+
+
+def _interval_elapsed() -> bool:
+    """True iff the user's configured gap has passed since the last successful poll.
+
+    launchd fires this script on its own (plist) cadence. The user's preference
+    is the minimum gap *between* polls, which we enforce here so changing it in
+    the dashboard takes effect on the next tick without needing to reload
+    launchd.
+    """
+    last = settings.get_last_poll_at()
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+    return elapsed >= settings.get_poll_interval_seconds()
 
 
 def _try_easypost(pkg: dict) -> easypost.TrackerSnapshot | None:
@@ -49,9 +69,26 @@ def _try_easypost(pkg: dict) -> easypost.TrackerSnapshot | None:
     return None
 
 
-def poll_once() -> dict[str, int]:
+def poll_once(force: bool = False) -> dict[str, int]:
     db.init_schema()
+    # Always ingest the inbox — watching for new .eml drops is cheap and the
+    # user cares about new orders showing up promptly. The interval gate only
+    # throttles the (chatty, rate-limited) carrier polling step below.
     inbox_summary = inbox.process_inbox()
+
+    if not force and not _interval_elapsed():
+        return {
+            "inbox_seen": inbox_summary["seen"],
+            "inbox_created": inbox_summary["created"],
+            "inbox_updated": inbox_summary["updated"],
+            "inbox_unrecognized": inbox_summary["unrecognized"],
+            "inbox_failed": inbox_summary["failed"],
+            "checked": 0,
+            "updated": 0,
+            "notified": 0,
+            "errors": 0,
+            "skipped": True,
+        }
 
     packages = db.list_packages(include_delivered=True)
     carrier_summary = {"checked": 0, "updated": 0, "notified": 0, "errors": 0}
@@ -105,6 +142,7 @@ def poll_once() -> dict[str, int]:
         else:
             carrier_summary["errors"] += 1
 
+    settings.record_poll_at()
     return {
         "inbox_seen": inbox_summary["seen"],
         "inbox_created": inbox_summary["created"],

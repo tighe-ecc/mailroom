@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from mailroom import db, easypost, inbox, poll, scrape, watcher
+from mailroom import db, easypost, inbox, poll, scrape, settings as mr_settings, watcher
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from feedback import note as _feedback_note  # noqa: E402
@@ -129,6 +129,31 @@ def _context(
         "sort_by": sort,
         "sort_dir": dir.lower(),
         "is_htmx": request.headers.get("hx-request") == "true",
+        "poll_status": _poll_status(),
+    }
+
+
+def _poll_status() -> dict[str, Any]:
+    """Background-poller health for the dashboard header chip."""
+    last = mr_settings.get_last_poll_at()
+    interval = mr_settings.get_poll_interval_seconds()
+    age_seconds: int | None = None
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+            age_seconds = max(0, int((now - last_dt).total_seconds()))
+        except ValueError:
+            age_seconds = None
+    # Stale = haven't heard from the poller in more than ~1.5 × the user's
+    # configured interval. Flags a dead launchd daemon, a crashed poll script,
+    # or an unset MAILROOM_DB path on the daemon side.
+    stale = age_seconds is None or age_seconds > int(interval * 1.5)
+    return {
+        "last_poll_at": last,
+        "age_seconds": age_seconds,
+        "interval_seconds": interval,
+        "stale": stale,
     }
 
 
@@ -302,8 +327,24 @@ def merge_rows(request: Request, src_id: int, dst_id: int) -> HTMLResponse:
 
 @app.post("/refresh", response_class=HTMLResponse)
 def refresh(request: Request) -> HTMLResponse:
-    poll.poll_once()
+    # User asked for a refresh — bypass the configured interval gate.
+    poll.poll_once(force=True)
     return templates.TemplateResponse(request, "_packages.html", _context(request))
+
+
+@app.post("/settings/poll_interval", response_class=HTMLResponse)
+def update_poll_interval(
+    request: Request, poll_interval_minutes: int = Form(...)
+) -> HTMLResponse:
+    """Save the user's preferred poll frequency. Returns the OOB-swappable
+    poll-status chip so the header updates without a full page reload."""
+    seconds = max(1, poll_interval_minutes) * 60
+    mr_settings.set_poll_interval_seconds(seconds)
+    return templates.TemplateResponse(
+        request,
+        "_poll_status.html",
+        {"poll_status": _poll_status()},
+    )
 
 
 @app.post("/inbox/process", response_class=HTMLResponse)
