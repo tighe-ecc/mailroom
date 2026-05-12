@@ -138,5 +138,58 @@ class PollIntervalGateTests(unittest.TestCase):
         self.assertEqual(summary["inbox_created"], 1)
 
 
+class PollStatusStalenessTests(unittest.TestCase):
+    """Unit tests for the _poll_status() stale-flag logic in app.py."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        self._tmp.close()
+        os.environ["MAILROOM_DB"] = self._tmp.name
+
+    def tearDown(self) -> None:
+        from mailroom import settings
+
+        Path(self._tmp.name).unlink(missing_ok=True)
+        settings.settings_path().unlink(missing_ok=True)
+        os.environ.pop("MAILROOM_DB", None)
+
+    def _poll_status(self):
+        # Import lazily so MAILROOM_DB env var is set first.
+        import importlib
+        import app as mailroom_app
+        importlib.reload(mailroom_app)
+        return mailroom_app._poll_status()
+
+    def test_stale_when_no_poll_recorded(self):
+        ps = self._poll_status()
+        self.assertTrue(ps["stale"])
+
+    def test_not_stale_within_interval(self):
+        from mailroom import settings
+        settings.set_poll_interval_seconds(600)
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        settings.record_poll_at(recent)
+        ps = self._poll_status()
+        self.assertFalse(ps["stale"])
+
+    def test_stale_once_interval_exceeded(self):
+        from mailroom import settings
+        settings.set_poll_interval_seconds(600)
+        # 600 s interval + 60 s grace = stale at 661 s
+        old = (datetime.now(timezone.utc) - timedelta(seconds=661)).isoformat()
+        settings.record_poll_at(old)
+        ps = self._poll_status()
+        self.assertTrue(ps["stale"])
+
+    def test_not_stale_inside_grace_period(self):
+        from mailroom import settings
+        settings.set_poll_interval_seconds(600)
+        # 600 s interval exceeded but still within 60 s grace window
+        edge = (datetime.now(timezone.utc) - timedelta(seconds=630)).isoformat()
+        settings.record_poll_at(edge)
+        ps = self._poll_status()
+        self.assertFalse(ps["stale"])
+
+
 if __name__ == "__main__":
     unittest.main()
