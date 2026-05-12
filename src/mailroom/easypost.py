@@ -14,7 +14,12 @@ from dotenv import load_dotenv
 from easypost import EasyPostClient
 
 
-TERMINAL_STATUSES = {"delivered", "return_to_sender", "failure", "cancelled", "error"}
+# Statuses for which we stop hitting the carrier API. "received" is the
+# manually-set "I picked it up from the mailroom rack" state — once a row is
+# there, polling is pointless.
+TERMINAL_STATUSES = {
+    "delivered", "received", "return_to_sender", "failure", "cancelled", "error",
+}
 
 # Carriers that require a linked carrier account by default (e.g. FedEx) expose a
 # "<Name>Default" variant that uses EasyPost's shared account. We translate between
@@ -51,6 +56,7 @@ ACTIVE_DISPLAY = {
 
 TERMINAL_DISPLAY = {
     "delivered": "Delivered",
+    "received": "Received",
     "return_to_sender": "Returned to sender",
     "failure": "Failure",
     "cancelled": "Cancelled",
