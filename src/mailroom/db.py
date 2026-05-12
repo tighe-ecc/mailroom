@@ -56,6 +56,14 @@ TERMINAL_STATUSES = {
     "delivered", "received", "cancelled", "return_to_sender", "failure", "error",
 }
 
+# Statuses hidden from the default dashboard view. "delivered" stays visible
+# because the user still needs to walk to the mailroom rack and physically
+# pick it up; only after they tick the "Received" checkbox does the row
+# drop out of the active list.
+HIDDEN_BY_DEFAULT_STATUSES = {
+    "received", "cancelled", "return_to_sender", "failure", "error",
+}
+
 # Lifecycle ordering. Used to detect regressions — e.g. a late-arriving
 # order-confirmation email should not downgrade an already-shipped row to
 # "confirmed". Values are co-equal across "out_for_delivery" and
@@ -613,11 +621,11 @@ def list_packages(
         query = "SELECT * FROM packages"
         params: tuple[Any, ...] = ()
     else:
-        placeholders = ", ".join("?" for _ in TERMINAL_STATUSES)
+        placeholders = ", ".join("?" for _ in HIDDEN_BY_DEFAULT_STATUSES)
         query = (
             f"SELECT * FROM packages WHERE status IS NULL OR status NOT IN ({placeholders})"
         )
-        params = tuple(TERMINAL_STATUSES)
+        params = tuple(HIDDEN_BY_DEFAULT_STATUSES)
     # `(expr) IS NULL` emulates NULLS LAST: nulls sort to the bottom regardless of direction.
     query += f" ORDER BY ({expr}) IS NULL, {expr} {direction}, created_at DESC"
     with connect(db_path) as conn:
