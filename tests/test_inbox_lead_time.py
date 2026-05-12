@@ -26,6 +26,7 @@ def _parsed(
         po_number=None,
         item_description="x",
         ordered_date=ordered_date,
+        ordered_date_confidence=0.5,
         promised_ship_date=None,
         promised_delivery_date=promised_delivery_date,
         lead_time_days=lead_time_days,
@@ -91,6 +92,32 @@ class ParserLeadTimeCoercionTests(unittest.TestCase):
         self.assertIsNone(
             parser._coerce({"kind": "order_confirmation", "lead_time_days": 999}).lead_time_days
         )
+
+
+class OrderedDateConfidenceTests(unittest.TestCase):
+    """Coercion + clamping for the new ordered_date_confidence field."""
+
+    def test_round_trip(self):
+        p = parser._coerce({"kind": "order_confirmation", "ordered_date_confidence": 0.85})
+        self.assertEqual(p.ordered_date_confidence, 0.85)
+
+    def test_missing_defaults_to_zero(self):
+        """An older / non-conforming model that doesn't emit the field must not
+        accidentally cross the high-confidence threshold."""
+        p = parser._coerce({"kind": "order_confirmation"})
+        self.assertEqual(p.ordered_date_confidence, 0.0)
+
+    def test_clamped_to_unit_interval(self):
+        self.assertEqual(
+            parser._coerce({"ordered_date_confidence": 1.7}).ordered_date_confidence, 1.0
+        )
+        self.assertEqual(
+            parser._coerce({"ordered_date_confidence": -0.3}).ordered_date_confidence, 0.0
+        )
+
+    def test_garbage_falls_back_to_zero(self):
+        p = parser._coerce({"ordered_date_confidence": "very"})
+        self.assertEqual(p.ordered_date_confidence, 0.0)
 
 
 if __name__ == "__main__":
