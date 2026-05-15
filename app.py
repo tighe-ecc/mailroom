@@ -6,6 +6,7 @@ Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 47821
 from __future__ import annotations
 
 import logging
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -14,7 +15,7 @@ from typing import Any
 
 import re
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -93,8 +94,22 @@ app = FastAPI(title="Mailroom", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
+def _git_sync_feedback() -> None:
+    repo = str(ROOT)
+    try:
+        subprocess.run(["git", "-C", repo, "add", "feedback.md"], check=True, capture_output=True, text=True, timeout=10)
+        if subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"], timeout=10).returncode == 0:
+            return
+        subprocess.run(["git", "-C", repo, "commit", "-m", "feedback: sync new entry"], check=True, capture_output=True, text=True, timeout=10)
+        subprocess.run(["git", "-C", repo, "push"], check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as exc:
+        logging.warning("feedback git-sync failed: %s\n%s", exc, exc.stderr)
+    except Exception as exc:
+        logging.warning("feedback git-sync error: %s", exc)
+
+
 @app.post("/feedback")
-async def feedback(request: Request) -> dict[str, bool]:
+async def feedback(request: Request, background_tasks: BackgroundTasks) -> dict[str, bool]:
     payload = await request.json()
     _feedback_note(
         payload.get("description", ""),
@@ -104,6 +119,7 @@ async def feedback(request: Request) -> dict[str, bool]:
         url=payload.get("url") or None,
         path=ROOT,
     )
+    background_tasks.add_task(_git_sync_feedback)
     return {"ok": True}
 
 
