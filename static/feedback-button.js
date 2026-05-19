@@ -82,6 +82,10 @@ const STYLE = `
   font-weight: 500;
   color: #374151;
 }
+.required-indicator {
+  color: #b91c1c;
+  margin-left: 2px;
+}
 .row input,
 .row textarea,
 .row select {
@@ -166,11 +170,11 @@ const HTML = `
       </select>
     </div>
     <div class="row">
-      <label for="fb-title">Title</label>
+      <label for="fb-title">Title<span class="required-indicator" aria-hidden="true">*</span></label>
       <input id="fb-title" name="title" required maxlength="120" autocomplete="off" />
     </div>
     <div class="row">
-      <label for="fb-desc">Description</label>
+      <label for="fb-desc">Description<span class="required-indicator" aria-hidden="true">*</span></label>
       <textarea id="fb-desc" name="description" required></textarea>
     </div>
     <div class="row expedite" data-role="expedite-row" hidden>
