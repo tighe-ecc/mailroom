@@ -50,6 +50,29 @@ CREATE INDEX IF NOT EXISTS idx_packages_order_number ON packages(order_number);
 CREATE INDEX IF NOT EXISTS idx_packages_po_number ON packages(po_number);
 -- sender_domain index is created in _migrate_add_columns so the index DDL
 -- doesn't run before the column has been added on existing v2 databases.
+
+-- email_files makes the on-disk .eml the source of truth and this table the
+-- ledger of "what we've already parsed". On every GUI startup we walk
+-- processed/ + failed/ and re-ingest anything whose sha256/parser_version
+-- doesn't match the recorded value — that way a transient parse failure
+-- (OpenAI hiccup, network blip) gets a free retry on the next launch instead
+-- of silently rotting in failed/ forever.
+--
+-- row_id is FK -> packages.id ON DELETE SET NULL: deleting a package row
+-- doesn't drop the parse-ledger entry, but the scan sees row_id IS NULL and
+-- knows to re-ingest. The "received" terminal status is the one user-confirmed
+-- state we never overwrite from a re-parse (see inbox.reindex_all).
+CREATE TABLE IF NOT EXISTS email_files (
+    filename       TEXT PRIMARY KEY,
+    sha256         TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    parsed_at      TEXT NOT NULL,
+    row_id         INTEGER,
+    error          TEXT,
+    FOREIGN KEY (row_id) REFERENCES packages(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_files_row_id ON email_files(row_id);
 """
 
 TERMINAL_STATUSES = {
@@ -113,6 +136,10 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # Enable FK enforcement so email_files.row_id auto-NULLs when its package
+    # row is deleted (matches the ON DELETE SET NULL in the schema). SQLite
+    # disables FKs by default per-connection, so we have to opt in here.
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
@@ -777,3 +804,60 @@ PRE_SHIPMENT_STATUSES = {"ordered", "confirmed", "in_fulfillment"}
 def pre_shipment_count(db_path: Path | None = None) -> int:
     counts = status_counts(db_path)
     return sum(counts.get(s, 0) for s in PRE_SHIPMENT_STATUSES)
+
+
+# ---------------------------------------------------------------------------
+# email_files ledger
+#
+# The .eml files in processed/ + failed/ are the source of truth; this table
+# records which file content + parser version produced each packages row.
+# Reads/writes happen on startup (scan) and on every inbox ingest.
+# ---------------------------------------------------------------------------
+
+
+def get_email_file(
+    filename: str, db_path: Path | None = None
+) -> dict[str, Any] | None:
+    """Look up the ledger entry for a .eml filename, or None if never parsed."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM email_files WHERE filename = ?", (filename,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_email_file(
+    filename: str,
+    sha256: str,
+    parser_version: str,
+    row_id: int | None,
+    error: str | None,
+    db_path: Path | None = None,
+) -> None:
+    """Record (or overwrite) a parse outcome for a .eml.
+
+    Used in two places:
+      - inbox ingest writes one row per successful or failed parse;
+      - the startup scan writes one row per re-ingested file (and a fresh row
+        for any file it discovered for the first time).
+
+    Callers that want to record a failure without losing the previously-known
+    row_id should pass the previous row_id through — this function does not
+    null it out on its own. (The migrated FK is ON DELETE SET NULL, so the
+    row_id will be cleared automatically if the underlying packages row is
+    later deleted.)
+    """
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO email_files (filename, sha256, parser_version, parsed_at, row_id, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(filename) DO UPDATE SET
+                sha256         = excluded.sha256,
+                parser_version = excluded.parser_version,
+                parsed_at      = excluded.parsed_at,
+                row_id         = excluded.row_id,
+                error          = excluded.error
+            """,
+            (filename, sha256, parser_version, _now(), row_id, error),
+        )

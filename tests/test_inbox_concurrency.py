@@ -79,12 +79,24 @@ class ProcessInboxVanishTolerance(unittest.TestCase):
         # Override the inbox dir for this test.
         self._old_env = os.environ.get(inbox.INBOX_ROOT_ENV)
         os.environ[inbox.INBOX_ROOT_ENV] = str(self.root)
+        # The ingest helper now writes to email_files on every file — needs
+        # an isolated DB with init_schema() applied, otherwise it tries to
+        # touch the user's real ~/Mailroom/.mailroom/db.sqlite.
+        self._old_db = os.environ.get("MAILROOM_DB")
+        self._db_file = self.root / "test.sqlite"
+        os.environ["MAILROOM_DB"] = str(self._db_file)
+        from mailroom import db as _db
+        _db.init_schema()
 
     def tearDown(self):
         if self._old_env is None:
             os.environ.pop(inbox.INBOX_ROOT_ENV, None)
         else:
             os.environ[inbox.INBOX_ROOT_ENV] = self._old_env
+        if self._old_db is None:
+            os.environ.pop("MAILROOM_DB", None)
+        else:
+            os.environ["MAILROOM_DB"] = self._old_db
         self.tmp.cleanup()
 
     def test_vanished_file_not_counted_as_failed(self):

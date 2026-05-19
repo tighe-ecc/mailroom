@@ -11,6 +11,7 @@ import contextlib
 import email
 import email.policy
 import fcntl
+import hashlib
 import logging
 import os
 import shutil
@@ -414,43 +415,312 @@ def _process_inbox_locked() -> dict[str, int]:
                 # rather than failed.
                 continue
             summary["seen"] += 1
-            try:
-                subject, sender, body, email_date = _load_eml(path)
-                if not body:
-                    raise ValueError("could not extract body text from .eml")
-                parsed = parser.parse_email(subject, sender, body)
-                if not parsed.is_actionable:
-                    _safe_move(path, dirs["unrecognized"] / path.name)
-                    summary["unrecognized"] += 1
-                    log.info(
-                        "unrecognized email %s (kind=%s conf=%.2f)",
-                        path.name,
-                        parsed.kind,
-                        parsed.confidence,
-                    )
-                    continue
-                sender_domain = db.extract_sender_domain(sender)
-                action, row_id = _apply(
-                    parsed, sender_domain=sender_domain, email_date=email_date
-                )
-                summary[action] += 1
-                _safe_move(path, dirs["processed"] / path.name)
-                log.info("%s row %s from %s: %s", action, row_id, path.name, asdict(parsed))
-            except FileNotFoundError:
+            outcome = _ingest_one(path, source_state="inbox", dirs=dirs)
+            if outcome.vanished:
                 # Another process moved the file out from under us. Roll the
                 # `seen` count back and move on — this isn't a failure.
                 summary["seen"] -= 1
-                log.info("inbox file %s vanished mid-process; skipping", path.name)
                 continue
+            summary[outcome.action] += 1
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Per-file ingest helper
+#
+# Shared by the inbox watcher (source_state="inbox") and the startup scan
+# (source_state="processed" | "failed"). Centralises the "parse + apply +
+# move + write email_files" sequence so the scan can't accidentally diverge
+# from the live pipeline.
+# ---------------------------------------------------------------------------
+
+
+VALID_SOURCE_STATES = {"inbox", "processed", "failed"}
+
+
+class IngestOutcome:
+    """Lightweight result object — counted as ``action`` in the summary dict.
+
+    ``vanished`` distinguishes a file that disappeared mid-flight (another
+    process beat us) from a real failure. ``preserved_row_id`` is set when a
+    re-ingest failed but we kept the previously-known packages row intact;
+    callers writing to ``email_files`` use it so the ledger entry doesn't
+    null out a still-valid link.
+    """
+
+    __slots__ = ("action", "row_id", "error", "vanished", "preserved_row_id")
+
+    def __init__(
+        self,
+        action: str = "failed",
+        row_id: int | None = None,
+        error: str | None = None,
+        vanished: bool = False,
+        preserved_row_id: int | None = None,
+    ) -> None:
+        self.action = action
+        self.row_id = row_id
+        self.error = error
+        self.vanished = vanished
+        self.preserved_row_id = preserved_row_id
+
+
+def _sha256_file(path: Path) -> str:
+    """Hex sha256 of the file's bytes — used as the email_files cache key.
+
+    .eml files are typically a few hundred KB; reading into memory once is
+    fine and keeps this simple. If files ever grow to multi-MB territory,
+    switch to a chunked update loop here.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _ingest_one(
+    path: Path,
+    source_state: str,
+    dirs: dict[str, Path] | None = None,
+) -> IngestOutcome:
+    """Parse + apply + move + record one .eml. Returns an :class:`IngestOutcome`.
+
+    ``source_state`` is where the file currently lives — controls which moves
+    are valid:
+
+    - ``inbox``: file is in the drop-zone root. On unrecognized → move to
+      ``unrecognized/``. On success → ``processed/``. On failure → ``failed/``.
+    - ``processed`` or ``failed``: file is being re-ingested by the startup
+      scan. On unrecognized: leave in place (we already classified it once;
+      keeping it where it is avoids gratuitous churn). On success: ensure
+      it's in ``processed/``. On failure: ensure it's in ``failed/``.
+
+    Whether the parse succeeds or fails, we always write an ``email_files``
+    row keyed by ``path.name`` so the next startup scan can see what happened.
+    """
+    if source_state not in VALID_SOURCE_STATES:
+        raise ValueError(f"invalid source_state {source_state!r}")
+    if dirs is None:
+        dirs = _ensure_dirs()
+
+    filename = path.name
+    # Hash up-front so a parse failure still gets the current sha into the
+    # ledger — that way the same broken .eml doesn't loop forever on each
+    # startup if its content hasn't changed.
+    try:
+        sha = _sha256_file(path)
+    except FileNotFoundError:
+        log.info("%s vanished before hash; skipping", filename)
+        return IngestOutcome(vanished=True)
+
+    # The previous ledger entry (if any) tells us which packages row this
+    # filename has been tied to — we preserve that link on parse failure so
+    # the existing row isn't orphaned in the ledger.
+    prior_entry = db.get_email_file(filename)
+    prior_row_id = prior_entry.get("row_id") if prior_entry else None
+
+    try:
+        subject, sender, body, email_date = _load_eml(path)
+        if not body:
+            raise ValueError("could not extract body text from .eml")
+        parsed = parser.parse_email(subject, sender, body)
+        if not parsed.is_actionable:
+            if source_state == "inbox":
+                _safe_move(path, dirs["unrecognized"] / filename)
+            # processed/ + failed/ re-ingest: leave the file where it is.
+            # Record the unrecognized outcome in the ledger so we don't keep
+            # re-parsing on every startup. Use prior_row_id (may be None) —
+            # an unrecognized email never had a packages row of its own.
+            db.upsert_email_file(
+                filename=filename,
+                sha256=sha,
+                parser_version=parser.effective_parser_version(),
+                row_id=prior_row_id,
+                error=None,
+            )
+            log.info(
+                "unrecognized email %s (kind=%s conf=%.2f)",
+                filename, parsed.kind, parsed.confidence,
+            )
+            return IngestOutcome(action="unrecognized", row_id=prior_row_id)
+
+        sender_domain = db.extract_sender_domain(sender)
+        action, row_id = _apply(
+            parsed, sender_domain=sender_domain, email_date=email_date
+        )
+        # File location: success → processed/
+        if source_state in {"inbox", "failed"}:
+            _safe_move(path, dirs["processed"] / filename)
+        # If already in processed/, leave it.
+        db.upsert_email_file(
+            filename=filename,
+            sha256=sha,
+            parser_version=parser.effective_parser_version(),
+            row_id=row_id,
+            error=None,
+        )
+        log.info("%s row %s from %s: %s", action, row_id, filename, asdict(parsed))
+        return IngestOutcome(action=action, row_id=row_id)
+    except FileNotFoundError:
+        log.info("inbox file %s vanished mid-process; skipping", filename)
+        return IngestOutcome(vanished=True)
+    except Exception as exc:
+        err = traceback.format_exc()
+        log.exception("failed to process %s", filename)
+        # Move to failed/ when coming from inbox or already-processed; leave
+        # in place when re-ingesting from failed/ (it's already there).
+        if source_state in {"inbox", "processed"}:
+            try:
+                _safe_move(path, dirs["failed"] / filename)
+                (dirs["failed"] / f"{filename}.error.txt").write_text(err)
             except Exception:
-                summary["failed"] += 1
-                err = traceback.format_exc()
-                log.exception("failed to process %s", path.name)
-                try:
-                    _safe_move(path, dirs["failed"] / path.name)
-                    (dirs["failed"] / f"{path.name}.error.txt").write_text(err)
-                except Exception:
-                    log.exception("also failed to move %s to failed/", path.name)
+                log.exception("also failed to move %s to failed/", filename)
+        else:
+            # source_state == "failed": refresh the sidecar error log so the
+            # user sees the latest exception, not the original one.
+            try:
+                (dirs["failed"] / f"{filename}.error.txt").write_text(err)
+            except Exception:
+                log.exception("could not refresh failed/ error sidecar for %s", filename)
+
+        # Preserve the prior row_id on a re-ingest failure — the existing
+        # packages row is still valid; only the parse outcome changed.
+        db.upsert_email_file(
+            filename=filename,
+            sha256=sha,
+            parser_version=parser.effective_parser_version(),
+            row_id=prior_row_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return IngestOutcome(
+            action="failed", error=str(exc), preserved_row_id=prior_row_id,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Startup reindex
+#
+# Runs once per FastAPI start. Walks processed/ + failed/ and re-ingests
+# anything stale (sha256 or parser_version mismatch, or no ledger entry at
+# all). Rows whose packages.status is "received" are immutable — that's the
+# only user-confirmed terminal state in the system and we don't let a fresh
+# parse clobber it.
+# ---------------------------------------------------------------------------
+
+# Status that means "the user has physically picked up the package". The .eml
+# parse outcome is no longer authoritative once the user has confirmed this;
+# the row state is frozen. Importing the literal here so a future rename in
+# db.py forces an update here too.
+_RECEIVED_STATUS = "received"
+
+
+def reindex_all(
+    *, ingest: bool = True, dirs: dict[str, Path] | None = None
+) -> dict[str, int]:
+    """Walk processed/ + failed/, re-ingest anything stale.
+
+    ``ingest=False`` is a dry-run mode: walks the same files and computes the
+    same skip/re-parse decisions, but never calls the LLM, moves files, or
+    writes to the DB. Used for the live verification step in development —
+    callers can confirm the scan reaches the right files without burning
+    credits.
+
+    Returns a summary dict so the FastAPI startup hook can log it.
+    """
+    if dirs is None:
+        dirs = _ensure_dirs()
+    summary = {
+        "scanned": 0,
+        "skipped_current": 0,
+        "skipped_received": 0,
+        "reparsed_success": 0,
+        "reparsed_failed": 0,
+        "duplicate_filename": 0,
+    }
+    version = parser.effective_parser_version()
+
+    # Build the candidate set. A .eml present in BOTH processed/ and failed/
+    # with the same name is a bug somewhere upstream — we don't crash, just
+    # log a warning and prefer processed/ as authoritative.
+    seen_names: set[str] = set()
+    candidates: list[tuple[Path, str]] = []
+    for state in ("processed", "failed"):
+        root = dirs[state]
+        if not root.exists():
+            continue
+        for p in sorted(root.iterdir()):
+            if not p.is_file() or p.suffix.lower() != ".eml":
+                continue
+            if p.name in seen_names:
+                summary["duplicate_filename"] += 1
+                log.warning(
+                    "reindex: %s exists in both processed/ and failed/; "
+                    "preferring processed/", p.name,
+                )
+                continue
+            seen_names.add(p.name)
+            candidates.append((p, state))
+
+    for path, state in candidates:
+        summary["scanned"] += 1
+        try:
+            sha = _sha256_file(path)
+        except FileNotFoundError:
+            log.info("reindex: %s vanished before hash; skipping", path.name)
+            continue
+
+        entry = db.get_email_file(path.name)
+
+        # Decision 1: if the ledger says we've already parsed this exact
+        # content with this exact parser version AND we still have a packages
+        # row to back it, the file is current — skip.
+        if (
+            entry is not None
+            and entry.get("sha256") == sha
+            and entry.get("parser_version") == version
+            and entry.get("row_id") is not None
+        ):
+            # Confirm the row still exists. The FK is ON DELETE SET NULL so a
+            # vanished row would show row_id IS NULL above; this extra check
+            # guards against the rare case where row_id was written but the
+            # row is gone (FK was disabled at the time, etc.).
+            pkg = db.get_package(int(entry["row_id"]))
+            if pkg is not None:
+                summary["skipped_current"] += 1
+                log.info("reindex: %s up-to-date; skipping", path.name)
+                continue
+
+        # Decision 2: even if stale, if the linked packages row has been
+        # marked "received" by the user, the row is frozen — never re-parse.
+        if entry is not None and entry.get("row_id") is not None:
+            pkg = db.get_package(int(entry["row_id"]))
+            if pkg is not None and pkg.get("status") == _RECEIVED_STATUS:
+                summary["skipped_received"] += 1
+                log.info(
+                    "reindex: %s linked to row %s with status=received; "
+                    "skipping", path.name, entry["row_id"],
+                )
+                continue
+
+        # Otherwise: re-ingest. Dry-run stops here.
+        if not ingest:
+            log.info("reindex: would re-ingest %s (state=%s)", path.name, state)
+            summary["reparsed_success"] += 1  # bookkeeping; nothing actually changed
+            continue
+
+        outcome = _ingest_one(path, source_state=state, dirs=dirs)
+        if outcome.action == "failed":
+            summary["reparsed_failed"] += 1
+            log.info("reindex: %s re-parse failed: %s", path.name, outcome.error)
+        elif outcome.vanished:
+            # Vanished mid-scan (another process moved it) — neither success
+            # nor failure; just don't count it.
+            log.info("reindex: %s vanished during re-ingest; skipping", path.name)
+        else:
+            summary["reparsed_success"] += 1
+            log.info(
+                "reindex: %s re-ingested as %s (row=%s)",
+                path.name, outcome.action, outcome.row_id,
+            )
+
+    log.info("reindex complete: %s", summary)
     return summary
 
 

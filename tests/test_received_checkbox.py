@@ -35,7 +35,14 @@ class ReceiveEndpointTests(unittest.TestCase):
         self._easypost_patch.start()
         self._lifespan_patch = patch("app.watcher.start", return_value=None)
         self._lifespan_patch.start()
-        patch("app.watcher.stop", return_value=None).start()
+        self._watcher_stop_patch = patch("app.watcher.stop", return_value=None)
+        self._watcher_stop_patch.start()
+        # Skip the on-startup re-ingest scan so the test doesn't reach into
+        # the user's real ~/Mailroom/.mailroom/processed/ dir. Tracked in
+        # tearDown — a leaked patcher poisons inbox.reindex_all in any test
+        # that runs afterwards.
+        self._reindex_patch = patch("app.inbox.reindex_all", return_value={})
+        self._reindex_patch.start()
 
         import app as app_module
 
@@ -46,6 +53,8 @@ class ReceiveEndpointTests(unittest.TestCase):
         self.client.__exit__(None, None, None)
         self._easypost_patch.stop()
         self._lifespan_patch.stop()
+        self._watcher_stop_patch.stop()
+        self._reindex_patch.stop()
         Path(self._tmp.name).unlink(missing_ok=True)
         os.environ.pop("MAILROOM_DB", None)
 

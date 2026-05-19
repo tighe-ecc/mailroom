@@ -6,12 +6,14 @@ Takes a parsed email's subject + sender + body, returns a structured
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import urllib.parse
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -22,6 +24,35 @@ log = logging.getLogger(__name__)
 
 MODEL = "gpt-4o-mini"
 MIN_CONFIDENCE = 0.4
+
+# Bumped manually when we want everything re-parsed on the next startup scan,
+# even if the parser source hasn't visibly changed (e.g. an OpenAI model
+# upgrade we want to backfill onto historical .emls). Combined with a short
+# content hash of parser.py to form effective_parser_version() — that's what
+# gets stored in email_files.parser_version and compared on each scan.
+#
+# Invariant: every file whose change could affect parse output MUST be hashed
+# in _parser_content_hash(). Today the entire grounding + LLM call lives in
+# this file (parser.py), and SYSTEM_PROMPT is a constant inside it, so hashing
+# parser.py alone is sufficient. If grounding logic moves into another module
+# in the future, add that file to the hash here.
+PARSER_VERSION = "v1"
+
+
+def _parser_content_hash() -> str:
+    """Short content hash that catches substantive parser/prompt changes the
+    PARSER_VERSION bump might forget. See PARSER_VERSION docstring for the
+    invariant."""
+    h = hashlib.sha256()
+    h.update(Path(__file__).read_bytes())
+    return h.hexdigest()[:10]
+
+
+def effective_parser_version() -> str:
+    """The version string written to ``email_files.parser_version`` on every
+    parse. Compared exact-string on the next startup scan to decide whether
+    a .eml needs to be re-ingested."""
+    return f"{PARSER_VERSION}+{_parser_content_hash()}"
 
 
 SYSTEM_PROMPT = """\
