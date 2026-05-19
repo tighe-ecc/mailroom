@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -169,8 +170,9 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 _FEEDBACK_LOG = logging.getLogger(__name__)
 
-CLAUDE_ROUTINE_ID = os.environ.get("FEEDBACK_ROUTINE_ID")
-CLAUDE_API_TOKEN = os.environ.get("FEEDBACK_ROUTINE_TOKEN")
+_EXPEDITE_LOCKFILE = Path.home() / "Mailroom" / ".mailroom" / ".feedback-agent.pid"
+_EXPEDITE_LOG_FILE = Path("/tmp/mailroom-feedback-agent.log")
+_EXPEDITE_PROMPT_FILE = ROOT / "feedback_drain_prompt.md"
 
 
 def _git_sync_feedback() -> None:
@@ -187,26 +189,152 @@ def _git_sync_feedback() -> None:
         _FEEDBACK_LOG.warning("feedback git-sync error: %s", exc)
 
 
-def _expedite_routine() -> None:
-    """Kick the remote Claude routine to drain feedback.md immediately."""
-    if not (CLAUDE_ROUTINE_ID and CLAUDE_API_TOKEN):
-        _FEEDBACK_LOG.info("expedite requested but no routine configured")
+def _expedite_pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness check via ``kill -0``."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but owned by someone else — treat as alive so we don't
+        # stomp on an unrelated PID-recycled process.
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _expedite_acquire_lock() -> bool:
+    """Acquire the feedback-agent lockfile. Returns True if we now hold it.
+
+    Three states: missing (write placeholder, proceed); present with a live
+    PID (skip); present with a stale PID (clean, then proceed). We write our
+    own PID first as a placeholder to close the check-then-spawn race window,
+    then overwrite with the spawned child's PID after Popen succeeds.
+    """
+    try:
+        _EXPEDITE_LOCKFILE.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: lockfile parent dir not writable: %s", exc)
+        return False
+
+    if _EXPEDITE_LOCKFILE.exists():
+        try:
+            raw = _EXPEDITE_LOCKFILE.read_text(encoding="utf-8").strip()
+            existing_pid = int(raw) if raw else 0
+        except (OSError, ValueError):
+            existing_pid = 0
+        if existing_pid and _expedite_pid_is_alive(existing_pid):
+            _FEEDBACK_LOG.info(
+                "expedite: feedback-agent already running (pid=%s); skipping",
+                existing_pid,
+            )
+            return False
+        _FEEDBACK_LOG.info(
+            "expedite: stale lockfile (pid=%s gone); reclaiming", existing_pid or "?"
+        )
+        try:
+            _EXPEDITE_LOCKFILE.unlink()
+        except OSError as exc:
+            _FEEDBACK_LOG.warning("expedite: failed to clear stale lockfile: %s", exc)
+            return False
+
+    try:
+        _EXPEDITE_LOCKFILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: failed to write lockfile: %s", exc)
+        return False
+    return True
+
+
+def _expedite_local() -> None:
+    """Spawn a detached headless ``claude`` agent to drain feedback.md.
+
+    Replaces the kit's remote-routine trigger. The mailroom user's feedback
+    often cites parsed-email files under ``~/Mailroom/.mailroom/processed/*.eml``
+    that a remote routine can't see, so the agent has to run on this machine
+    with filesystem access to the repo. ``claude --add-dir <repo>`` gives the
+    child process the working tree as its working set; auth is inherited from
+    the user's local CLI install.
+
+    Graceful degradation: missing CLI, missing prompt file, missing lock dir,
+    or an in-flight drain all log and return — they never raise back into
+    the FastAPI request, which has already been queued to the client.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        _FEEDBACK_LOG.warning(
+            "expedite: 'claude' CLI not on PATH; skipping local agent spawn"
+        )
+        return
+
+    if not _EXPEDITE_PROMPT_FILE.exists():
+        _FEEDBACK_LOG.warning(
+            "expedite: prompt file %s missing; skipping", _EXPEDITE_PROMPT_FILE
+        )
         return
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"https://claude.ai/api/routines/{CLAUDE_ROUTINE_ID}/run",
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {CLAUDE_API_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            data=b"{}",
+        prompt = _EXPEDITE_PROMPT_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: prompt file unreadable: %s", exc)
+        return
+    if not prompt.strip():
+        _FEEDBACK_LOG.warning("expedite: prompt file is empty; skipping")
+        return
+
+    if not _expedite_acquire_lock():
+        return
+
+    # Detached: own session (so a uvicorn worker restart doesn't kill the
+    # drain mid-flight via pgrp), stdin closed, stdout/stderr append-binary
+    # to a shared log file.
+    args = [claude_bin, "--print", "--add-dir", str(ROOT), prompt]
+    try:
+        log_fh = open(_EXPEDITE_LOG_FILE, "ab")
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: cannot open log %s: %s", _EXPEDITE_LOG_FILE, exc)
+        try:
+            _EXPEDITE_LOCKFILE.unlink()
+        except OSError:
+            pass
+        return
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            _FEEDBACK_LOG.info("expedite trigger: %s", resp.status)
-    except Exception as exc:
-        _FEEDBACK_LOG.warning("expedite trigger failed: %s", exc)
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: failed to spawn claude: %s", exc)
+        try:
+            log_fh.close()
+        except OSError:
+            pass
+        try:
+            _EXPEDITE_LOCKFILE.unlink()
+        except OSError:
+            pass
+        return
+    finally:
+        try:
+            log_fh.close()
+        except OSError:
+            pass
+
+    try:
+        _EXPEDITE_LOCKFILE.write_text(str(proc.pid), encoding="utf-8")
+    except OSError as exc:
+        _FEEDBACK_LOG.warning("expedite: could not update lockfile with child pid: %s", exc)
+    _FEEDBACK_LOG.info(
+        "expedite: spawned local feedback-agent pid=%s (log=%s)",
+        proc.pid, _EXPEDITE_LOG_FILE,
+    )
 
 
 @app.post("/feedback")
@@ -224,7 +352,7 @@ async def feedback(request: Request, background_tasks: BackgroundTasks) -> dict[
     )
     background_tasks.add_task(_git_sync_feedback)
     if expedited:
-        background_tasks.add_task(_expedite_routine)
+        background_tasks.add_task(_expedite_local)
     return {"ok": True}
 # --- end feedback endpoint -------------------------------------------------
 
