@@ -171,7 +171,7 @@ const HTML = `
     </div>
     <div class="row">
       <label for="fb-desc">Description</label>
-      <textarea id="fb-desc" name="description" required></textarea>
+      <textarea id="fb-desc" name="description"></textarea>
     </div>
     <div class="row expedite" data-role="expedite-row" hidden>
       <input id="fb-expedite" name="expedite" type="checkbox" />
@@ -252,9 +252,9 @@ export function initFeedback(config) {
     const type = String(data.get('type') || 'bug');
     const title = String(data.get('title') || '').trim();
     const description = String(data.get('description') || '').trim();
-    if (!title || !description) {
+    if (!title) {
       status.className = 'status error';
-      status.textContent = 'Title and description are required.';
+      status.textContent = 'Title is required.';
       return;
     }
 
