@@ -127,6 +127,19 @@ class ExpediteLocalTests(unittest.TestCase):
         self.assertEqual(cmd[0], "/usr/local/bin/claude")
         self.assertIn("--print", cmd)
         self.assertIn("--add-dir", cmd)
+        self.assertIn("--allowedTools", cmd)
+        # --allowedTools' value is the whitelist; spot-check that the
+        # tools the drain genuinely needs are present.
+        idx_at = cmd.index("--allowedTools")
+        allowed = cmd[idx_at + 1]
+        for required in ("Bash", "Read", "Write", "Edit"):
+            self.assertIn(required, allowed,
+                          f"expected {required!r} in --allowedTools, got {allowed!r}")
+        # And spot-check that Agent / WebFetch are NOT in the whitelist —
+        # an unattended drain should not be allowed to spawn sub-agents
+        # or fetch arbitrary URLs.
+        self.assertNotIn("Agent", allowed)
+        self.assertNotIn("WebFetch", allowed)
         # --add-dir's value is the repo root.
         idx = cmd.index("--add-dir")
         self.assertEqual(cmd[idx + 1], str(app.ROOT))

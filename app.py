@@ -344,7 +344,24 @@ def _expedite_local() -> None:
     # Detached: own session (so a uvicorn worker restart doesn't kill the
     # drain mid-flight via pgrp), stdin closed, stdout/stderr append-binary
     # to a shared log file.
-    args = [claude_bin, "--print", "--add-dir", str(ROOT), prompt]
+    # Headless permission whitelist. Without --allowedTools the agent hits
+    # an interactive permission prompt the first time it tries to run Bash
+    # (e.g. `git push`), has no human to approve it, and hangs forever.
+    # Scope is intentionally broad: the drain genuinely needs git, gh, the
+    # test runner, file editing, and task tracking. WebFetch / WebSearch and
+    # the Agent tool are deliberately excluded — an unattended drain should
+    # not be spawning sub-agents or fetching arbitrary URLs.
+    allowed_tools = (
+        "Bash Read Write Edit Glob Grep "
+        "TaskCreate TaskUpdate TaskList TaskGet"
+    )
+    args = [
+        claude_bin,
+        "--print",
+        "--add-dir", str(ROOT),
+        "--allowedTools", allowed_tools,
+        prompt,
+    ]
     try:
         log_fh = open(_EXPEDITE_LOG_FILE, "ab")
     except OSError as exc:
