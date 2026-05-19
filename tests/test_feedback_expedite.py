@@ -143,14 +143,19 @@ class ExpediteLocalTests(unittest.TestCase):
         # --add-dir's value is the repo root.
         idx = cmd.index("--add-dir")
         self.assertEqual(cmd[idx + 1], str(app.ROOT))
-        # The prompt is the final positional argument and matches the file
-        # contents — readable, non-empty.
-        prompt_arg = cmd[-1]
-        self.assertEqual(
-            prompt_arg,
-            app._EXPEDITE_PROMPT_FILE.read_text(encoding="utf-8"),
+        # The prompt is somewhere in argv (not necessarily last — it must
+        # come BEFORE --allowedTools to dodge that flag's variadic-arg
+        # consumption). Find it by content.
+        expected_prompt = app._EXPEDITE_PROMPT_FILE.read_text(encoding="utf-8")
+        self.assertIn(expected_prompt, cmd, "prompt not found in spawn argv")
+        prompt_idx = cmd.index(expected_prompt)
+        allowed_idx = cmd.index("--allowedTools")
+        self.assertLess(
+            prompt_idx, allowed_idx,
+            "prompt must come before --allowedTools, otherwise the "
+            "variadic flag eats it and the agent exits with a "
+            "'must be provided' error.",
         )
-        self.assertTrue(prompt_arg.strip(), "prompt argument was empty")
         # Detached: own session, stdin disconnected.
         self.assertTrue(kwargs.get("start_new_session"))
         self.assertEqual(kwargs.get("stdin"), app.subprocess.DEVNULL)
