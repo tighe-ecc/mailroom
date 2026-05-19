@@ -487,18 +487,36 @@ def find_match(
             if match:
                 return match
 
+        # po_number is the *buyer-side* PO (e.g. "FRD-249") that we put on
+        # multiple vendors' orders for the same project — McMaster, Protolabs,
+        # DigiKey all see the same FRD-249. So a po-number match alone is not
+        # vendor identity; require sender_domain (or vendor name as a fallback)
+        # to also agree, otherwise we'd splat a Protolabs order onto the
+        # McMaster row that happens to share the PO.
         if norm_po:
-            match = _scan_for_id(conn, "po_number", norm_po, norm_domain, norm_vendor)
+            match = _scan_for_id(
+                conn, "po_number", norm_po, norm_domain, norm_vendor,
+                require_vendor_match=True,
+            )
             if match:
                 return match
 
         # Cross-field: vendors don't always agree on which is "order" vs "PO".
+        # The same buyer-PO collision risk applies as soon as the po_number
+        # column is involved on either side, so require a vendor/domain match
+        # on the cross-field branches too.
         if norm_order:
-            match = _scan_for_id(conn, "po_number", norm_order, norm_domain, norm_vendor)
+            match = _scan_for_id(
+                conn, "po_number", norm_order, norm_domain, norm_vendor,
+                require_vendor_match=True,
+            )
             if match:
                 return match
         if norm_po:
-            match = _scan_for_id(conn, "order_number", norm_po, norm_domain, norm_vendor)
+            match = _scan_for_id(
+                conn, "order_number", norm_po, norm_domain, norm_vendor,
+                require_vendor_match=True,
+            )
             if match:
                 return match
 
@@ -521,11 +539,18 @@ def _scan_for_id(
     target_norm: str,
     domain_norm: str | None,
     vendor_norm: str | None,
+    require_vendor_match: bool = False,
 ) -> dict[str, Any] | None:
     """Find a row whose <column> normalizes to target_norm.
 
     When multiple rows match (rare — same order # used by different vendors),
     prefer the one whose sender_domain matches; fall back to vendor name.
+
+    ``require_vendor_match`` tightens the match for ID columns that aren't
+    vendor-unique on their own — most notably ``po_number``, which is the
+    buyer-side PO and is reused across every vendor on a project. With it on,
+    a candidate row whose sender_domain *and* vendor both disagree with the
+    inbound email is rejected, even if it's the only po-number match.
     """
     rows = conn.execute(
         f"SELECT * FROM packages WHERE {column} IS NOT NULL AND {column} != ''"
@@ -545,6 +570,17 @@ def _scan_for_id(
             by_vendor = [m for m in matches if _norm_vendor(m.get("vendor")) == vendor_norm]
             if by_vendor:
                 return by_vendor[0]
+    if require_vendor_match and (domain_norm or vendor_norm):
+        for m in matches:
+            row_domain = _norm_domain(m.get("sender_domain"))
+            row_vendor = _norm_vendor(m.get("vendor"))
+            domain_ok = domain_norm and row_domain and row_domain == domain_norm
+            vendor_ok = vendor_norm and row_vendor and row_vendor == vendor_norm
+            # Accept if at least one identifier agrees, or if the row simply
+            # has no domain/vendor to compare against (legacy / manual rows).
+            if domain_ok or vendor_ok or (not row_domain and not row_vendor):
+                return m
+        return None
     return matches[0]
 
 
