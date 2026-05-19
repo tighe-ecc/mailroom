@@ -457,6 +457,7 @@ def apply_to_row(
             new_status=effective_status,
             location=snap.last_event_location,
             vendor=pkg.get("vendor"),
+            row_id=row_id,
         )
 
     return True

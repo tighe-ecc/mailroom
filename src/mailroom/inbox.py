@@ -267,6 +267,7 @@ def _apply(
             new_status=status,
             location=snap.last_event_location if snap else None,
             vendor=parsed.vendor or (existing or {}).get("vendor"),
+            row_id=row_id,
         )
 
     return action, row_id

@@ -79,6 +79,10 @@ class IsolatedMailroom(unittest.TestCase):
         self._db_file = self.root / "test.sqlite"
         os.environ["MAILROOM_DB"] = str(self._db_file)
         db.init_schema()
+        # MAILROOM_QUIET silences notify.send() — the reindex tests exercise
+        # _ingest_one, which fires notify on status transitions if not gated.
+        self._old_quiet = os.environ.get("MAILROOM_QUIET")
+        os.environ["MAILROOM_QUIET"] = "1"
 
     def tearDown(self) -> None:
         if self._old_inbox is None:
@@ -89,6 +93,10 @@ class IsolatedMailroom(unittest.TestCase):
             os.environ.pop("MAILROOM_DB", None)
         else:
             os.environ["MAILROOM_DB"] = self._old_db
+        if self._old_quiet is None:
+            os.environ.pop("MAILROOM_QUIET", None)
+        else:
+            os.environ["MAILROOM_QUIET"] = self._old_quiet
         self._tmpdir.cleanup()
 
 

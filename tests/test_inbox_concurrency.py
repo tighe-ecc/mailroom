@@ -87,6 +87,10 @@ class ProcessInboxVanishTolerance(unittest.TestCase):
         os.environ["MAILROOM_DB"] = str(self._db_file)
         from mailroom import db as _db
         _db.init_schema()
+        # MAILROOM_QUIET silences notify.send() — the concurrency tests
+        # exercise _apply, which fires notifications on status transitions.
+        self._old_quiet = os.environ.get("MAILROOM_QUIET")
+        os.environ["MAILROOM_QUIET"] = "1"
 
     def tearDown(self):
         if self._old_env is None:
@@ -97,6 +101,10 @@ class ProcessInboxVanishTolerance(unittest.TestCase):
             os.environ.pop("MAILROOM_DB", None)
         else:
             os.environ["MAILROOM_DB"] = self._old_db
+        if self._old_quiet is None:
+            os.environ.pop("MAILROOM_QUIET", None)
+        else:
+            os.environ["MAILROOM_QUIET"] = self._old_quiet
         self.tmp.cleanup()
 
     def test_vanished_file_not_counted_as_failed(self):

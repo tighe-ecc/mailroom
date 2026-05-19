@@ -43,6 +43,10 @@ class ReceiveEndpointTests(unittest.TestCase):
         # that runs afterwards.
         self._reindex_patch = patch("app.inbox.reindex_all", return_value={})
         self._reindex_patch.start()
+        # MAILROOM_QUIET silences notify.send() so an inadvertent ingest can't
+        # spam the user's Notification Center during a test run.
+        self._old_quiet = os.environ.get("MAILROOM_QUIET")
+        os.environ["MAILROOM_QUIET"] = "1"
 
         import app as app_module
 
@@ -55,6 +59,10 @@ class ReceiveEndpointTests(unittest.TestCase):
         self._lifespan_patch.stop()
         self._watcher_stop_patch.stop()
         self._reindex_patch.stop()
+        if self._old_quiet is None:
+            os.environ.pop("MAILROOM_QUIET", None)
+        else:
+            os.environ["MAILROOM_QUIET"] = self._old_quiet
         Path(self._tmp.name).unlink(missing_ok=True)
         os.environ.pop("MAILROOM_DB", None)
 

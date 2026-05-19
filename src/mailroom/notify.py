@@ -65,8 +65,23 @@ def send(
     subtitle: str | None = None,
     message: str,
     url: str | None = None,
+    group_id: str | None = None,
 ) -> None:
-    """Fire a macOS notification. Silent on non-macOS systems."""
+    """Fire a macOS notification.
+
+    No-op on non-macOS systems, or when ``MAILROOM_QUIET=1`` is set in the
+    environment. Tests opt into the quiet flag so an inadvertent live
+    re-ingest run can't spam the user's Notification Center with "Shipped"
+    pop-ups for every .eml in their archive.
+
+    ``group_id`` (when set) is passed to terminal-notifier as ``-group``,
+    which replaces any prior notification with the same group instead of
+    accumulating a fresh entry in Notification Center every time. Callers
+    should pass a stable per-package identifier (typically the row id
+    formatted as ``"mailroom:<id>"``) so repeat updates collapse.
+    """
+    if os.environ.get("MAILROOM_QUIET") == "1":
+        return
     tn = _find_terminal_notifier()
     if tn:
         args = [tn, "-title", title, "-message", message, "-sound", "default"]
@@ -80,6 +95,12 @@ def send(
             # subject to PATH at click time — terminal-notifier's click
             # callback can run with a minimal environment.
             args += ["-execute", f"/usr/bin/open {shlex.quote(url)}"]
+        if group_id:
+            # -group lets a later notification for the same package replace
+            # the earlier one in Notification Center instead of stacking.
+            # Without this, every poll cycle that touches a row creates a
+            # fresh entry and the user wakes up to a sea of duplicates.
+            args += ["-group", group_id]
         subprocess.run(args, check=False)
         return
 
@@ -123,8 +144,14 @@ def notify_status_change(
     new_status: str,
     location: str | None,
     vendor: str | None = None,
+    row_id: int | None = None,
 ) -> None:
-    """Fire a notification for notable status transitions. No-op if uninteresting."""
+    """Fire a notification for notable status transitions. No-op if uninteresting.
+
+    ``row_id`` is forwarded to ``send`` as the dedup ``group_id`` so a row that
+    transitions multiple times collapses into a single Notification Center
+    entry instead of stacking duplicates.
+    """
     title = _status_title(old_status, new_status)
     if title is None:
         return
@@ -133,4 +160,11 @@ def notify_status_change(
     if location:
         desc = f"{desc} ({location})"
 
-    send(title=title, subtitle=vendor or None, message=desc, url=DASHBOARD_URL)
+    group_id = f"mailroom:{row_id}" if row_id is not None else None
+    send(
+        title=title,
+        subtitle=vendor or None,
+        message=desc,
+        url=DASHBOARD_URL,
+        group_id=group_id,
+    )
