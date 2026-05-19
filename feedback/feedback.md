@@ -54,3 +54,6 @@
 - [ ] **2026-05-18 23:13 — Feature: Description should be optional.**
   Shouldn't need to add a verbose description to collect feedback and have action on
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
+- [ ] **2026-05-19 07:09 — Feature: Indicate required fields and feedback card**
+  Right now, it's not clear what is or isn't required in the feedback card. Indicate as such with the standard asterisk symbol.
+  _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
