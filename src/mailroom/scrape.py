@@ -291,23 +291,108 @@ _CARRIER_URL_TEMPLATES = {
     "4px": "https://track.4px.com/#/result/0/{tn}/en-us",
 }
 
+# Host suffixes we consider trustworthy for a given carrier. If a stored
+# tracking URL's host matches one of these, we believe the email gave us a
+# real deep-link. If not — and we have a template for the carrier — the
+# template wins. This guards against parser hallucinations (e.g. a
+# Protolabs shipping email whose tracking_url got filled in with a
+# d.digikey.com click-tracker pulled from a previous DigiKey order) and
+# against generic landing pages (e.g. a bare https://www.fedex.com/apps/
+# fedextrack/ with no tracking number in the query string).
+_CARRIER_TRUSTED_HOSTS: dict[str, tuple[str, ...]] = {
+    "fedex": ("fedex.com",),
+    "ups": ("ups.com",),
+    "usps": ("usps.com",),
+    "dhl": ("dhl.com",),
+    "dhlexpress": ("dhl.com",),
+    "ontrac": ("ontrac.com",),
+    "4px": ("4px.com",),
+}
+
+
+def _normalize_carrier(raw: str | None) -> str:
+    return (raw or "").strip().lower().replace(" ", "")
+
+
+def _sniff_carrier_from_tracking_number(tn: str) -> str | None:
+    """Best-effort carrier guess from a tracking-number format.
+
+    Used when the stored carrier field is missing/unrecognized. Patterns are
+    intentionally conservative — we'd rather return None and fall back than
+    deep-link a UPS number into FedEx.
+    """
+    upper = tn.upper().strip()
+    compact = upper.replace(" ", "")
+    if not compact:
+        return None
+    if compact.startswith("1Z") and len(compact) == 18:
+        return "ups"
+    if compact.startswith("4PX"):
+        return "4px"
+    # FedEx Ground/Express/SmartPost: 12, 15, 20, or 22 digits. Many UPS Mail
+    # Innovations / USPS numbers are also long-digit, so only claim FedEx for
+    # the canonical Express/Ground 12-digit length to avoid false positives.
+    if compact.isdigit() and len(compact) == 12:
+        return "fedex"
+    return None
+
+
+def _stored_url_matches_carrier(stored: str, carrier_key: str) -> bool:
+    """True iff `stored` looks like a real deep-link for `carrier_key`.
+
+    Returns True when we can't decide — e.g. there's no trusted-host list for
+    the carrier — so non-major carriers (Chitchats, OnTrac variants, vendor
+    portals like uline.com) keep working as they did before.
+    """
+    trusted = _CARRIER_TRUSTED_HOSTS.get(carrier_key)
+    if not trusted:
+        return True
+    try:
+        host = (urllib.parse.urlparse(stored).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in trusted)
+
 
 def tracking_url_for(pkg: dict[str, Any]) -> str | None:
     """Pick the best user-visible tracking URL for a package row.
 
-    Priority: the URL captured from the shipping email, then a known-carrier
-    template derived from the tracking number, otherwise None.
+    Priority:
+      1. The URL captured from the shipping email *if* it looks plausible for
+         this package's carrier (host matches a known-good host for that
+         carrier).
+      2. A known-carrier template derived from the carrier field, or sniffed
+         from the tracking-number format when the carrier field is missing.
+      3. The stored URL as-is, if we have no better option.
+      4. None.
     """
-    stored = pkg.get("tracking_url")
-    if stored:
-        return stored
     tn = pkg.get("tracking_number")
+    stored = pkg.get("tracking_url")
+    carrier_key = _normalize_carrier(pkg.get("carrier"))
+
+    if not carrier_key and tn:
+        carrier_key = _sniff_carrier_from_tracking_number(tn) or ""
+
+    tmpl = _CARRIER_URL_TEMPLATES.get(carrier_key) if carrier_key else None
+    if not tmpl and tn and tn.upper().startswith("4PX"):
+        tmpl = _CARRIER_URL_TEMPLATES["4px"]
+        carrier_key = carrier_key or "4px"
+
+    if stored:
+        if not carrier_key or _stored_url_matches_carrier(stored, carrier_key):
+            return stored
+        # Stored URL's host disagrees with the carrier (e.g. a hallucinated
+        # d.digikey.com link on a FedEx Protolabs shipment). Prefer the
+        # carrier template when we have one; otherwise fall through to the
+        # stored URL as a last resort.
+        if tmpl and tn:
+            return tmpl.format(tn=urllib.parse.quote(tn, safe=""))
+        return stored
+
     if not tn:
         return None
-    carrier = (pkg.get("carrier") or "").strip().lower().replace(" ", "")
-    tmpl = _CARRIER_URL_TEMPLATES.get(carrier)
-    if not tmpl and tn.upper().startswith("4PX"):
-        tmpl = _CARRIER_URL_TEMPLATES["4px"]
     if not tmpl:
         return None
     return tmpl.format(tn=urllib.parse.quote(tn, safe=""))
