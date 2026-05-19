@@ -166,21 +166,57 @@ async def _periodic_poll_loop() -> None:
         raise
 
 
+async def _startup_reindex_loop() -> None:
+    """Walk processed/ + failed/ once at startup, re-ingest anything stale.
+
+    Lives as a background task so uvicorn can finish startup promptly — the
+    scan can take minutes on a large archive (every .eml is re-hashed and any
+    stale ones go through a full LLM parse). Runs in a worker thread via
+    ``asyncio.to_thread`` because the inbox helpers do blocking I/O (sqlite,
+    OpenAI HTTP) that would stall the event loop if called inline.
+
+    Why on every startup: the launchd watcher can't see .emls already in
+    ``processed/`` or ``failed/``, so a transient parse failure (OpenAI
+    outage, network blip) used to leave files in ``failed/`` forever with no
+    retry path. This loop closes that gap — every restart is a free retry.
+    """
+    try:
+        summary = await asyncio.to_thread(inbox.reindex_all)
+        logging.info("startup reindex done: %s", summary)
+    except asyncio.CancelledError:
+        logging.info("startup reindex cancelled")
+        raise
+    except Exception:
+        # A bug in the reindex must not take down the dashboard. Log and move
+        # on; the watcher + manual re-drops still work even if the scan
+        # crashes.
+        logging.exception("startup reindex failed")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     db.init_schema()
     observer = watcher.start()
     poll_task = asyncio.create_task(_periodic_poll_loop(), name="mailroom-poll")
+    # Run the on-startup re-ingest as a separate task so it can proceed in
+    # parallel with request serving. Don't await it before yield — uvicorn
+    # would block here waiting for the whole archive to be re-checked, and
+    # the user would see a 30+ second startup hang on every launch.
+    reindex_task = asyncio.create_task(
+        _startup_reindex_loop(), name="mailroom-reindex"
+    )
     try:
         yield
     finally:
-        poll_task.cancel()
-        try:
-            await poll_task
-        except (asyncio.CancelledError, Exception):
-            # Cancellation is expected; any other exception was already logged
-            # by the loop itself. Don't let teardown raise.
-            pass
+        for task in (poll_task, reindex_task):
+            task.cancel()
+        for task in (poll_task, reindex_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                # Cancellation is expected; any other exception was already
+                # logged by the task itself. Don't let teardown raise.
+                pass
         watcher.stop(observer)
 
 

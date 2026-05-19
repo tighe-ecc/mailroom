@@ -127,6 +127,7 @@ def poll_once(force: bool = False) -> dict[str, int]:
                     new_status=snap.status,
                     location=snap.last_event_location,
                     vendor=pkg.get("vendor"),
+                    row_id=pkg["id"],
                 )
                 carrier_summary["notified"] += 1
             continue
