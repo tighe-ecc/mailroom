@@ -6,6 +6,7 @@ Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 47821
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -82,6 +83,31 @@ templates.env.filters["pretty_time"] = _pretty_time
 templates.env.filters["status_class"] = _status_class
 templates.env.filters["display_status"] = easypost.display_status
 templates.env.filters["tracking_url_for"] = scrape.tracking_url_for
+
+
+_STATIC_DIR = ROOT / "static"
+
+
+def _static_v(name: str) -> str:
+    """Content-hash cache buster for a static asset.
+
+    Templates reference `?v={{ static_v('foo.js') }}` so the import URL changes
+    whenever the file's contents change. Without this, browsers cache the
+    bundled JS by URL and won't pick up kit updates until the user hard-refreshes.
+    Multi-user deployments (where every user does `git pull` and expects things
+    to just work) need this to be automatic.
+
+    Hashed at module load — static files don't change at runtime, only across
+    restarts. Falls back to an empty string if the file is missing so the
+    caller's URL stays valid even if a refactor renames an asset.
+    """
+    try:
+        return hashlib.md5((_STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+    except OSError:
+        return ""
+
+
+templates.env.globals["static_v"] = _static_v
 
 
 # Brief delay before the in-process poller's first fire, so we don't compete

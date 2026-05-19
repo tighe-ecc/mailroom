@@ -41,7 +41,7 @@
     {% block content %}{% endblock %}
   </div>
   <script type="module">
-    import { initFeedback } from '/static/feedback-button.js';
+    import { initFeedback } from '/static/feedback-button.js?v={{ static_v('feedback-button.js') }}';
     initFeedback({ endpoint: '/feedback', toolName: 'procurement-tracker' });
   </script>
 </body>
