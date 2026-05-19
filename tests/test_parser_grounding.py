@@ -154,6 +154,69 @@ class UrlTokenExtractionTests(unittest.TestCase):
         self.assertIn("4PX12345ABCDE", tokens)
 
 
+class MultiValueTests(unittest.TestCase):
+    """Models occasionally concatenate multiple values into a single field when
+    the schema accepts only one (e.g. multi-package shipments). The grounding
+    pass should split on common separators and keep the first verbatim part
+    instead of dropping the whole value.
+    """
+
+    MULTI_BODY = (
+        "Your order has shipped in 2 packages.\n"
+        "Tracking numbers:\n"
+        "  Package 1: 794612345678\n"
+        "  Package 2: 794612345679\n"
+        "Carrier: FedEx\n"
+    )
+
+    def test_comma_joined_tracking_keeps_first_verbatim(self):
+        p = parser._coerce(_raw(tracking_number="794612345678, 794612345679"))
+        grounded = parser._ground(p, body=self.MULTI_BODY, subject="", sender="")
+        self.assertEqual(grounded.tracking_number, "794612345678")
+
+    def test_semicolon_joined_tracking_keeps_first_verbatim(self):
+        p = parser._coerce(_raw(tracking_number="794612345678; 794612345679"))
+        grounded = parser._ground(p, body=self.MULTI_BODY, subject="", sender="")
+        self.assertEqual(grounded.tracking_number, "794612345678")
+
+    def test_and_joined_tracking_keeps_first_verbatim(self):
+        p = parser._coerce(_raw(tracking_number="794612345678 and 794612345679"))
+        grounded = parser._ground(p, body=self.MULTI_BODY, subject="", sender="")
+        self.assertEqual(grounded.tracking_number, "794612345678")
+
+    def test_multi_value_where_no_part_grounds_drops_to_none(self):
+        # Both parts hallucinated — neither appears in body. Drop entirely.
+        body = "Your order has shipped.\nCarrier: FedEx\n"
+        p = parser._coerce(_raw(tracking_number="999999999999, 888888888888"))
+        grounded = parser._ground(p, body=body, subject="", sender="")
+        self.assertIsNone(grounded.tracking_number)
+
+    def test_multi_value_picks_grounded_part_even_when_first_hallucinated(self):
+        # First value is hallucinated, second is real. Keep the second.
+        p = parser._coerce(_raw(tracking_number="999999999999, 794612345678"))
+        grounded = parser._ground(p, body=self.MULTI_BODY, subject="", sender="")
+        self.assertEqual(grounded.tracking_number, "794612345678")
+
+    def test_single_scalar_value_still_passes_unchanged(self):
+        # Regression guard: a single-value extraction should be unaffected by
+        # the multi-value path.
+        p = parser._coerce(_raw())
+        grounded = parser._ground(p, body=GROUNDED_BODY, subject="", sender="")
+        self.assertEqual(grounded.tracking_number, "381386875690")
+
+    def test_multi_value_applies_to_carrier_too(self):
+        # Same treatment for carrier when model concatenates carriers across
+        # multi-package shipments with mixed carriers.
+        body = "Package A via FedEx tracking 123. Package B via UPS tracking 1Z456.\n"
+        p = parser._coerce(_raw(
+            carrier="FedEx, UPS",
+            tracking_number="123",
+            tracking_url=None,
+        ))
+        grounded = parser._ground(p, body=body, subject="", sender="")
+        self.assertEqual(grounded.carrier, "FedEx")
+
+
 class NormalizeTests(unittest.TestCase):
     def test_normalize_strips_punctuation(self):
         self.assertEqual(parser._normalize("FedEx Express"), "fedexexpress")

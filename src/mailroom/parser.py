@@ -69,6 +69,10 @@ text names the carrier.
 - If you're tempted to "fill in" a field based on what a similar email usually \
 contains, return null instead. The downstream pipeline prefers a null field \
 over a guessed one.
+- If a single-value field has multiple candidates in the email (e.g. a \
+multi-package shipment with two tracking numbers), return only the FIRST one \
+as it appears in the email. Do not join values with commas. The pipeline \
+stores one tracking number per row; surface the others in `notes` if useful.
 - Keep item_description under ~80 characters.
 - ordered_date_confidence is required even when ordered_date is null (use 0.0). \
 The downstream pipeline falls back to the email Date header when this confidence \
@@ -183,6 +187,36 @@ def _appears_in(value: str, haystack_norm: str) -> bool:
     return bool(v) and v in haystack_norm
 
 
+_MULTI_VALUE_SPLIT_RE = re.compile(r"[,;]|\sand\s", re.IGNORECASE)
+
+
+def _first_grounded(value: str, haystack_norm: str) -> str | None:
+    """Return the first sub-value of `value` that appears verbatim in the body.
+
+    Models occasionally concatenate multiple values into a single string when
+    the schema accepts only one — e.g. a multi-package shipment with two
+    tracking numbers comes back as "794612345678, 794612345679". The naive
+    substring check then rejects the whole joined string and the user loses
+    both values. This helper:
+
+      1. tries the whole value first (the common case is a single scalar that's
+         already verbatim in the body);
+      2. otherwise splits on multi-value separators (comma, semicolon, " and ")
+         and returns the first part that appears verbatim.
+
+    Returns None if no part is grounded. Stays vendor-agnostic — the same
+    treatment applies to tracking numbers, order numbers, PO numbers, etc.
+    """
+    if not value:
+        return None
+    if _appears_in(value, haystack_norm):
+        return value
+    for part in (p.strip() for p in _MULTI_VALUE_SPLIT_RE.split(value)):
+        if part and _appears_in(part, haystack_norm):
+            return part
+    return None
+
+
 def _extract_url_tokens(url: str) -> list[str]:
     """Pull the discriminating tokens out of a URL: query-string values and the
     last few path segments. We use these as anchors to test whether the URL is
@@ -225,21 +259,31 @@ def _ground(parsed: ParsedEmail, body: str, subject: str, sender: str) -> Parsed
     haystack = f"{subject}\n{sender}\n{body}"
     norm = _normalize(haystack)
 
-    new_tracking = parsed.tracking_number
-    if new_tracking and not _appears_in(new_tracking, norm):
-        log.warning(
-            "grounding: dropping tracking_number %r — not present in email body",
-            new_tracking,
-        )
-        new_tracking = None
+    new_tracking = _first_grounded(parsed.tracking_number, norm) if parsed.tracking_number else None
+    if parsed.tracking_number and new_tracking != parsed.tracking_number:
+        if new_tracking is None:
+            log.warning(
+                "grounding: dropping tracking_number %r — not present in email body",
+                parsed.tracking_number,
+            )
+        else:
+            log.info(
+                "grounding: narrowed tracking_number %r → %r (multi-value)",
+                parsed.tracking_number, new_tracking,
+            )
 
-    new_carrier = parsed.carrier
-    if new_carrier and not _appears_in(new_carrier, norm):
-        log.warning(
-            "grounding: dropping carrier %r — not present in email body",
-            new_carrier,
-        )
-        new_carrier = None
+    new_carrier = _first_grounded(parsed.carrier, norm) if parsed.carrier else None
+    if parsed.carrier and new_carrier != parsed.carrier:
+        if new_carrier is None:
+            log.warning(
+                "grounding: dropping carrier %r — not present in email body",
+                parsed.carrier,
+            )
+        else:
+            log.info(
+                "grounding: narrowed carrier %r → %r (multi-value)",
+                parsed.carrier, new_carrier,
+            )
 
     new_url = parsed.tracking_url
     if new_url:
@@ -283,21 +327,31 @@ def _ground(parsed: ParsedEmail, body: str, subject: str, sender: str) -> Parsed
                     new_url = None
                     break
 
-    new_order = parsed.order_number
-    if new_order and not _appears_in(new_order, norm):
-        log.warning(
-            "grounding: dropping order_number %r — not present in email body",
-            new_order,
-        )
-        new_order = None
+    new_order = _first_grounded(parsed.order_number, norm) if parsed.order_number else None
+    if parsed.order_number and new_order != parsed.order_number:
+        if new_order is None:
+            log.warning(
+                "grounding: dropping order_number %r — not present in email body",
+                parsed.order_number,
+            )
+        else:
+            log.info(
+                "grounding: narrowed order_number %r → %r (multi-value)",
+                parsed.order_number, new_order,
+            )
 
-    new_po = parsed.po_number
-    if new_po and not _appears_in(new_po, norm):
-        log.warning(
-            "grounding: dropping po_number %r — not present in email body",
-            new_po,
-        )
-        new_po = None
+    new_po = _first_grounded(parsed.po_number, norm) if parsed.po_number else None
+    if parsed.po_number and new_po != parsed.po_number:
+        if new_po is None:
+            log.warning(
+                "grounding: dropping po_number %r — not present in email body",
+                parsed.po_number,
+            )
+        else:
+            log.info(
+                "grounding: narrowed po_number %r → %r (multi-value)",
+                parsed.po_number, new_po,
+            )
 
     if (
         new_tracking == parsed.tracking_number
