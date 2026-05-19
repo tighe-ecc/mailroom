@@ -237,6 +237,63 @@ class FindMatchTests(unittest.TestCase):
         )
         self.assertIsNone(match)
 
+    def test_po_number_alone_doesnt_match_across_vendors(self):
+        """Buyer-side PO ("FRD-249") is reused across every vendor on a project.
+        A Protolabs email with PO FRD-249 must NOT land on the McMaster-Carr row
+        that also has PO FRD-249 — otherwise the McMaster row gets overwritten
+        with Protolabs data on every field. Regression test for the Protolabs
+        parsing bug (feedback 2026-05-18).
+        """
+        mcmaster = self._add(
+            order_number="64285979",
+            po_number="FRD-249",
+            vendor="McMaster-Carr",
+            sender_domain="mcmaster.com",
+        )
+        match = db.find_match(
+            order_number="6257-696",
+            po_number="FRD-249",
+            vendor="Protolabs",
+            sender_domain="protolabs.com",
+            db_path=self.db_path,
+        )
+        self.assertIsNone(
+            match,
+            f"Protolabs email wrongly matched McMaster row {mcmaster} via shared PO",
+        )
+
+    def test_po_number_still_matches_same_vendor(self):
+        """The PO-number cross-vendor guard must not break the legitimate case
+        where the order-confirmation and shipping-confirmation for the *same*
+        vendor share the PO. Same vendor + same PO should still pair up."""
+        rid = self._add(
+            po_number="FRD-249",
+            vendor="Protolabs",
+            sender_domain="protolabs.com",
+        )
+        match = db.find_match(
+            po_number="FRD-249",
+            vendor="Protolabs",
+            sender_domain="protolabs.com",
+            db_path=self.db_path,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["id"], rid)
+
+    def test_po_number_matches_legacy_row_without_domain(self):
+        """Manually-entered rows (no sender_domain, no vendor) still match by
+        PO — there's nothing to disagree on, so the strict guard shouldn't
+        reject them."""
+        rid = self._add(po_number="FRD-249")  # legacy row: no vendor/domain
+        match = db.find_match(
+            po_number="FRD-249",
+            vendor="Protolabs",
+            sender_domain="protolabs.com",
+            db_path=self.db_path,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["id"], rid)
+
 
 if __name__ == "__main__":
     unittest.main()
