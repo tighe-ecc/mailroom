@@ -167,7 +167,7 @@ const HTML = `
     </div>
     <div class="row">
       <label for="fb-title">Title</label>
-      <input id="fb-title" name="title" required maxlength="120" autocomplete="off" />
+      <input id="fb-title" name="title" maxlength="120" autocomplete="off" />
     </div>
     <div class="row">
       <label for="fb-desc">Description</label>
@@ -252,9 +252,9 @@ export function initFeedback(config) {
     const type = String(data.get('type') || 'bug');
     const title = String(data.get('title') || '').trim();
     const description = String(data.get('description') || '').trim();
-    if (!title || !description) {
+    if (!description) {
       status.className = 'status error';
-      status.textContent = 'Title and description are required.';
+      status.textContent = 'Description is required.';
       return;
     }
 
