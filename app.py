@@ -198,13 +198,13 @@ _FEEDBACK_LOG = logging.getLogger(__name__)
 
 _EXPEDITE_LOCKFILE = Path.home() / "Mailroom" / ".mailroom" / ".feedback-agent.pid"
 _EXPEDITE_LOG_FILE = Path("/tmp/mailroom-feedback-agent.log")
-_EXPEDITE_PROMPT_FILE = ROOT / "feedback_drain_prompt.md"
+_EXPEDITE_PROMPT_FILE = ROOT / "feedback" / "drain_prompt.md"
 
 
 def _git_sync_feedback() -> None:
     repo = str(ROOT)
     try:
-        subprocess.run(["git", "-C", repo, "add", "feedback.md"], check=True, capture_output=True, text=True, timeout=10)
+        subprocess.run(["git", "-C", repo, "add", "feedback"], check=True, capture_output=True, text=True, timeout=10)
         if subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"], timeout=10).returncode == 0:
             return
         subprocess.run(["git", "-C", repo, "commit", "-m", "feedback: sync new entry"], check=True, capture_output=True, text=True, timeout=10)
@@ -402,7 +402,7 @@ async def feedback(request: Request, background_tasks: BackgroundTasks) -> dict[
         tool=payload.get("tool") or None,
         url=payload.get("url") or None,
         expedited=expedited,
-        path=ROOT,
+        path=ROOT / "feedback",
     )
     background_tasks.add_task(_git_sync_feedback)
     if expedited:
