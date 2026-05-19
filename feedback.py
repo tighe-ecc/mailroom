@@ -73,6 +73,7 @@ def _format_entry(
     title: str | None,
     tool: str | None,
     url: str | None,
+    expedited: bool = False,
     timestamp: datetime | None = None,
 ) -> str:
     ts = (timestamp or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -91,6 +92,8 @@ def _format_entry(
         meta_bits.append(f"tool: {tool}")
     if url:
         meta_bits.append(f"source: {url}")
+    if expedited:
+        meta_bits.append("expedited")
     if meta_bits:
         body_lines.append(f"  _{' · '.join(meta_bits)}_")
     return "\n".join(body_lines) + "\n"
@@ -109,6 +112,7 @@ def note(
     title: str | None = None,
     tool: str | None = None,
     url: str | None = None,
+    expedited: bool = False,
     path: Path | str | None = None,
 ) -> Path:
     """Append a feedback entry. Returns the path written to."""
@@ -124,6 +128,7 @@ def note(
         title=title,
         tool=tool,
         url=url,
+        expedited=expedited,
     )
     with target.open("a", encoding="utf-8") as fh:
         fh.write(entry)

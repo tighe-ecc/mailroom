@@ -2,13 +2,15 @@
 //
 // Drop-in floating feedback button. On submit, POSTs JSON to a configurable
 // endpoint. The endpoint owns persistence — typically it appends to a
-// project-local feedback.md.
+// project-local feedback.md — and is also responsible for triggering the
+// remote agent when `expedite` is true on the payload.
 //
 // Usage:
 //   import { initFeedback } from './feedback-button.js';
 //   initFeedback({
 //     endpoint: '/feedback',                   // required; relative or absolute URL
 //     toolName: 'procurement-tracker',         // optional; sent in the body for tagging
+//     expedite: true,                          // optional, default true; show the Expedite checkbox
 //   });
 //
 // The POSTed body shape:
@@ -16,6 +18,7 @@
 //     type: 'bug' | 'feature',
 //     title: string,
 //     description: string,
+//     expedite: boolean,      // user checked the Expedite box
 //     tool: string,           // toolName, or '' if not provided
 //     url: string,            // window.location.href
 //     userAgent: string,
@@ -126,6 +129,28 @@ const STYLE = `
 }
 .status.error { color: #b91c1c; }
 .status.success { color: #047857; }
+
+.row.expedite {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.row.expedite input[type="checkbox"] {
+  width: auto;
+  margin: 2px 0 0;
+}
+.row.expedite label {
+  margin: 0;
+  font-weight: 500;
+  cursor: pointer;
+}
+.row.expedite .hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #6b7280;
+}
 `;
 
 const HTML = `
@@ -148,6 +173,13 @@ const HTML = `
       <label for="fb-desc">Description</label>
       <textarea id="fb-desc" name="description" required></textarea>
     </div>
+    <div class="row expedite" data-role="expedite-row" hidden>
+      <input id="fb-expedite" name="expedite" type="checkbox" />
+      <label for="fb-expedite">
+        Expedite
+        <span class="hint">Trigger the remote agent now instead of waiting for the next nightly run.</span>
+      </label>
+    </div>
     <div class="status" role="status" aria-live="polite"></div>
     <div class="actions">
       <button type="button" class="cancel">Cancel</button>
@@ -158,7 +190,7 @@ const HTML = `
 `;
 
 export function initFeedback(config) {
-  const { endpoint, toolName } = config || {};
+  const { endpoint, toolName, expedite: showExpedite = true } = config || {};
   if (!endpoint) {
     throw new Error('initFeedback: endpoint is required');
   }
@@ -184,6 +216,9 @@ export function initFeedback(config) {
   const submitBtn = form.querySelector('button[type="submit"]');
   const status = root.querySelector('.status');
   const titleInput = root.getElementById('fb-title');
+  const expediteRow = root.querySelector('[data-role="expedite-row"]');
+  const expediteInput = root.getElementById('fb-expedite');
+  if (showExpedite) expediteRow.hidden = false;
 
   const resetStatus = () => {
     status.textContent = '';
@@ -232,6 +267,7 @@ export function initFeedback(config) {
         type,
         title,
         description,
+        expedite: Boolean(showExpedite && expediteInput.checked),
         tool: toolName || '',
         url: window.location.href,
         userAgent: navigator.userAgent,
