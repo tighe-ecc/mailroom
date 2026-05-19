@@ -355,12 +355,18 @@ def _expedite_local() -> None:
         "Bash Read Write Edit Glob Grep "
         "TaskCreate TaskUpdate TaskList TaskGet"
     )
+    # Argv ordering matters: --allowedTools is a Commander.js variadic flag
+    # (``<tools...>``) that greedily consumes every remaining positional
+    # argument. If the prompt comes after, it gets eaten as a "tool" and
+    # the agent dies with "Input must be provided either through stdin or
+    # as a prompt argument when using --print". Putting the prompt before
+    # the flags sidesteps the variadic.
     args = [
         claude_bin,
         "--print",
+        prompt,
         "--add-dir", str(ROOT),
         "--allowedTools", allowed_tools,
-        prompt,
     ]
     try:
         log_fh = open(_EXPEDITE_LOG_FILE, "ab")
