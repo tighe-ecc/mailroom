@@ -7,8 +7,10 @@ dot-prefix makes it hidden in Finder so the visible folder stays clean.
 
 from __future__ import annotations
 
+import contextlib
 import email
 import email.policy
+import fcntl
 import logging
 import os
 import shutil
@@ -25,8 +27,10 @@ from . import db, easypost, notify, parser, scrape
 
 log = logging.getLogger(__name__)
 
-# Serializes process_inbox() calls so the watcher and HTTP upload endpoint don't race
-# on the same file.
+# Serializes process_inbox() calls within a single process (FastAPI watcher,
+# upload endpoint, manual trigger). The cross-process race — the launchd poll
+# script and the FastAPI watcher both scanning the same inbox at the same time
+# — is handled by an OS-level file lock acquired in `_process_inbox_locked`.
 _PROCESS_LOCK = threading.Lock()
 
 INBOX_ROOT_ENV = "MAILROOM_INBOX"
@@ -363,6 +367,30 @@ def process_inbox() -> dict[str, int]:
         return _process_inbox_locked()
 
 
+@contextlib.contextmanager
+def _inbox_file_lock(root: Path):
+    """Serialize inbox processing across processes (launchd poll vs FastAPI watcher).
+
+    Without this, both processes can enumerate the same .eml at the same time
+    and race to `shutil.move` it — the loser raises FileNotFoundError and the
+    summary reports inflated `failed` counts even though the file actually
+    landed in `processed/`. The threading lock in this module only serializes
+    callers in a single Python process.
+    """
+    internal = root / INTERNAL_SUBDIR
+    internal.mkdir(parents=True, exist_ok=True)
+    lockfile = internal / ".process.lock"
+    fd = os.open(str(lockfile), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _process_inbox_locked() -> dict[str, int]:
     dirs = _ensure_dirs()
     summary = {
@@ -373,42 +401,66 @@ def _process_inbox_locked() -> dict[str, int]:
         "failed": 0,
     }
 
-    for path in sorted(dirs["root"].iterdir()):
-        if path.is_dir() or path.suffix.lower() != ".eml":
-            continue
-        summary["seen"] += 1
-        try:
-            subject, sender, body, email_date = _load_eml(path)
-            if not body:
-                raise ValueError("could not extract body text from .eml")
-            parsed = parser.parse_email(subject, sender, body)
-            if not parsed.is_actionable:
-                shutil.move(str(path), str(dirs["unrecognized"] / path.name))
-                summary["unrecognized"] += 1
-                log.info(
-                    "unrecognized email %s (kind=%s conf=%.2f)",
-                    path.name,
-                    parsed.kind,
-                    parsed.confidence,
-                )
+    with _inbox_file_lock(dirs["root"]):
+        # Snapshot the directory listing once under the lock. Any file that
+        # disappears between snapshot and processing (manual cleanup, finder
+        # rename, etc.) is skipped silently — it's no longer this pass's job.
+        paths = sorted(dirs["root"].iterdir())
+        for path in paths:
+            if path.is_dir() or path.suffix.lower() != ".eml":
                 continue
-            sender_domain = db.extract_sender_domain(sender)
-            action, row_id = _apply(
-                parsed, sender_domain=sender_domain, email_date=email_date
-            )
-            summary[action] += 1
-            shutil.move(str(path), str(dirs["processed"] / path.name))
-            log.info("%s row %s from %s: %s", action, row_id, path.name, asdict(parsed))
-        except Exception:
-            summary["failed"] += 1
-            err = traceback.format_exc()
-            log.exception("failed to process %s", path.name)
+            if not path.exists():
+                # Vanished between snapshot and now — treat as already-handled
+                # rather than failed.
+                continue
+            summary["seen"] += 1
             try:
-                shutil.move(str(path), str(dirs["failed"] / path.name))
-                (dirs["failed"] / f"{path.name}.error.txt").write_text(err)
+                subject, sender, body, email_date = _load_eml(path)
+                if not body:
+                    raise ValueError("could not extract body text from .eml")
+                parsed = parser.parse_email(subject, sender, body)
+                if not parsed.is_actionable:
+                    _safe_move(path, dirs["unrecognized"] / path.name)
+                    summary["unrecognized"] += 1
+                    log.info(
+                        "unrecognized email %s (kind=%s conf=%.2f)",
+                        path.name,
+                        parsed.kind,
+                        parsed.confidence,
+                    )
+                    continue
+                sender_domain = db.extract_sender_domain(sender)
+                action, row_id = _apply(
+                    parsed, sender_domain=sender_domain, email_date=email_date
+                )
+                summary[action] += 1
+                _safe_move(path, dirs["processed"] / path.name)
+                log.info("%s row %s from %s: %s", action, row_id, path.name, asdict(parsed))
+            except FileNotFoundError:
+                # Another process moved the file out from under us. Roll the
+                # `seen` count back and move on — this isn't a failure.
+                summary["seen"] -= 1
+                log.info("inbox file %s vanished mid-process; skipping", path.name)
+                continue
             except Exception:
-                log.exception("also failed to move %s to failed/", path.name)
+                summary["failed"] += 1
+                err = traceback.format_exc()
+                log.exception("failed to process %s", path.name)
+                try:
+                    _safe_move(path, dirs["failed"] / path.name)
+                    (dirs["failed"] / f"{path.name}.error.txt").write_text(err)
+                except Exception:
+                    log.exception("also failed to move %s to failed/", path.name)
     return summary
+
+
+def _safe_move(src: Path, dst: Path) -> None:
+    """`shutil.move` that tolerates a vanished source (another process beat us)."""
+    try:
+        shutil.move(str(src), str(dst))
+    except FileNotFoundError:
+        # Source already moved by a peer process — treat as success.
+        log.info("source %s already moved by another process; skipping", src.name)
 
 
 def pending_count() -> int:

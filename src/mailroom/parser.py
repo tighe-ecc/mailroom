@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass
+import re
+import urllib.parse
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from dotenv import load_dotenv
@@ -56,7 +58,17 @@ confidence<=0.2; leave other fields null.
 - Dates should be ISO format. If only a relative phrase is given ("ships in 3 \
 business days", "6-8 weeks lead time"), leave the date fields null and populate \
 lead_time_days instead so the dashboard can compute an estimated delivery date.
-- Do not invent tracking numbers or dates. If unsure, use null.
+- GROUNDING (critical): every value you place in tracking_number, tracking_url, \
+carrier, order_number, and po_number MUST be copyable verbatim from the email \
+body or headers shown to you. If the email body does not contain the literal \
+string for a field, return null for that field. Do not synthesize a tracking \
+URL from a tracking number unless the URL itself is printed in the email — the \
+downstream pipeline can build canonical carrier URLs on its own. Do not pattern- \
+match a tracking number into a carrier name; only fill carrier when the email \
+text names the carrier.
+- If you're tempted to "fill in" a field based on what a similar email usually \
+contains, return null instead. The downstream pipeline prefers a null field \
+over a guessed one.
 - Keep item_description under ~80 characters.
 - ordered_date_confidence is required even when ordered_date is null (use 0.0). \
 The downstream pipeline falls back to the email Date header when this confidence \
@@ -155,6 +167,156 @@ def _coerce(payload: dict[str, Any]) -> ParsedEmail:
     )
 
 
+_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize(s: str) -> str:
+    """Lowercase + strip non-alphanumerics. Lets us substring-test across HTML
+    artifacts, soft-wraps, and minor formatting differences without changing
+    the displayed value."""
+    return _ALNUM_RE.sub("", s.lower())
+
+
+def _appears_in(value: str, haystack_norm: str) -> bool:
+    """True iff `value` appears in `haystack_norm` once both are normalized."""
+    v = _normalize(value)
+    return bool(v) and v in haystack_norm
+
+
+def _extract_url_tokens(url: str) -> list[str]:
+    """Pull the discriminating tokens out of a URL: query-string values and the
+    last few path segments. We use these as anchors to test whether the URL is
+    grounded in the email body — a hallucinated tracking link will carry a
+    tracking-number-looking token that the body doesn't contain."""
+    tokens: list[str] = []
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return tokens
+    # Query-string values often carry the tracking number / order id.
+    for _key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=False).items():
+        for v in values:
+            if len(v) >= 6:  # ignore "1", "yes", "en_US", etc.
+                tokens.append(v)
+    # Last 2 path segments — vendors sometimes encode the id in the path.
+    for seg in [s for s in parsed.path.split("/") if s][-2:]:
+        if len(seg) >= 6:
+            tokens.append(seg)
+    return tokens
+
+
+def _ground(parsed: ParsedEmail, body: str, subject: str, sender: str) -> ParsedEmail:
+    """Drop any extracted field whose value isn't actually present in the email.
+
+    Vendor-agnostic check: the source text is the email body + subject + sender.
+    A field that survived the LLM step but doesn't appear anywhere in the source
+    is, by definition, hallucinated — drop it to None and let the downstream
+    pipeline decide what to do without that value (e.g. build a canonical
+    carrier URL from a verified tracking number).
+
+    Notes on what we deliberately do *not* ground here:
+    - vendor / item_description / notes / status_signal: paraphrased/normalized
+      from the body by design (a "McMaster-Carr" vendor field is fine even when
+      the body only says "McMaster Carr"; the model is also expected to canonicalize
+      carrier names like "FedEx" — handled separately below).
+    - dates and lead-time: numeric/date fields with their own plausibility gates
+      elsewhere in the pipeline.
+    """
+    haystack = f"{subject}\n{sender}\n{body}"
+    norm = _normalize(haystack)
+
+    new_tracking = parsed.tracking_number
+    if new_tracking and not _appears_in(new_tracking, norm):
+        log.warning(
+            "grounding: dropping tracking_number %r — not present in email body",
+            new_tracking,
+        )
+        new_tracking = None
+
+    new_carrier = parsed.carrier
+    if new_carrier and not _appears_in(new_carrier, norm):
+        log.warning(
+            "grounding: dropping carrier %r — not present in email body",
+            new_carrier,
+        )
+        new_carrier = None
+
+    new_url = parsed.tracking_url
+    if new_url:
+        # A tracking URL is grounded if any discriminating token from it appears
+        # in the body (matches on the tracking number, order id, or path-segment
+        # the URL carries). If nothing in the URL is anchored to the body, the
+        # whole URL is treated as hallucinated.
+        tokens = _extract_url_tokens(new_url)
+        if tokens and not any(_appears_in(t, norm) for t in tokens):
+            log.warning(
+                "grounding: dropping tracking_url %r — no token (%s) appears in body",
+                new_url, tokens,
+            )
+            new_url = None
+        # Belt and suspenders: if the URL carries a tracking-number-shaped
+        # token that disagrees with the verified tracking_number, drop the URL.
+        # Catches the cross-contamination pattern where the model copies a URL
+        # from a different shipment's template (e.g. a UPS deep-link with a
+        # totally different shipment's 1Z… number).
+        elif new_tracking:
+            tn_norm = _normalize(new_tracking)
+            for tok in tokens:
+                t_norm = _normalize(tok)
+                # "Tracking-shaped": 10+ chars, contains at least one digit
+                # (excludes pure word path-segments like "fedextrack" or
+                # "tracking"), and isn't our verified tracking number. If the
+                # token also doesn't appear in the body, the URL is anchored
+                # to some other shipment.
+                if (
+                    len(t_norm) >= 10
+                    and any(c.isdigit() for c in t_norm)
+                    and t_norm != tn_norm
+                    and t_norm not in norm
+                ):
+                    log.warning(
+                        "grounding: dropping tracking_url %r — carries "
+                        "tracking-shaped token %r that disagrees with "
+                        "verified tracking_number %r",
+                        new_url, tok, new_tracking,
+                    )
+                    new_url = None
+                    break
+
+    new_order = parsed.order_number
+    if new_order and not _appears_in(new_order, norm):
+        log.warning(
+            "grounding: dropping order_number %r — not present in email body",
+            new_order,
+        )
+        new_order = None
+
+    new_po = parsed.po_number
+    if new_po and not _appears_in(new_po, norm):
+        log.warning(
+            "grounding: dropping po_number %r — not present in email body",
+            new_po,
+        )
+        new_po = None
+
+    if (
+        new_tracking == parsed.tracking_number
+        and new_carrier == parsed.carrier
+        and new_url == parsed.tracking_url
+        and new_order == parsed.order_number
+        and new_po == parsed.po_number
+    ):
+        return parsed
+    return replace(
+        parsed,
+        tracking_number=new_tracking,
+        carrier=new_carrier,
+        tracking_url=new_url,
+        order_number=new_order,
+        po_number=new_po,
+    )
+
+
 def parse_email(subject: str, sender: str, body: str) -> ParsedEmail:
     """Ask the LLM to classify and extract fields from an email."""
     # Trim aggressively: 12k chars is ~3k tokens, enough for even long shipping emails.
@@ -181,5 +343,11 @@ def parse_email(subject: str, sender: str, body: str) -> ParsedEmail:
         payload = {}
 
     parsed = _coerce(payload)
+    # Ground the extracted fields against the actual email text before handing
+    # off to the inbox pipeline. The LLM occasionally cross-contaminates fields
+    # from similar templates (e.g. fills tracking_url with a UPS deep-link
+    # carrying a different shipment's tracking number); the grounding pass
+    # drops any field whose value isn't substring-present in the source text.
+    parsed = _ground(parsed, body=body, subject=subject, sender=sender)
     log.info("parsed email: %s", asdict(parsed))
     return parsed
