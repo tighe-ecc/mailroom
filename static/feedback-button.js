@@ -82,10 +82,6 @@ const STYLE = `
   font-weight: 500;
   color: #374151;
 }
-.required-indicator {
-  color: #b91c1c;
-  margin-left: 2px;
-}
 .row input,
 .row textarea,
 .row select {
@@ -170,12 +166,12 @@ const HTML = `
       </select>
     </div>
     <div class="row">
-      <label for="fb-title">Title<span class="required-indicator" aria-hidden="true">*</span></label>
-      <input id="fb-title" name="title" required maxlength="120" autocomplete="off" />
+      <label for="fb-title">Title</label>
+      <input id="fb-title" name="title" maxlength="120" autocomplete="off" />
     </div>
     <div class="row">
-      <label for="fb-desc">Description<span class="required-indicator" aria-hidden="true">*</span></label>
-      <textarea id="fb-desc" name="description" required></textarea>
+      <label for="fb-desc">Description</label>
+      <textarea id="fb-desc" name="description"></textarea>
     </div>
     <div class="row expedite" data-role="expedite-row" hidden>
       <input id="fb-expedite" name="expedite" type="checkbox" />
@@ -256,9 +252,9 @@ export function initFeedback(config) {
     const type = String(data.get('type') || 'bug');
     const title = String(data.get('title') || '').trim();
     const description = String(data.get('description') || '').trim();
-    if (!title || !description) {
+    if (!title && !description) {
       status.className = 'status error';
-      status.textContent = 'Title and description are required.';
+      status.textContent = 'Enter a title or description.';
       return;
     }
 
