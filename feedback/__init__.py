@@ -118,8 +118,6 @@ def note(
     """Append a feedback entry. Returns the path written to."""
     if type not in VALID_TYPES:
         raise ValueError(f"type must be one of {VALID_TYPES}, got {type!r}")
-    if not (description or "").strip():
-        raise ValueError("description is required")
     target = _resolve_target(path)
     _ensure_file(target)
     entry = _format_entry(
