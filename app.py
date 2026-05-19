@@ -151,26 +151,46 @@ def _context(
 
 
 def _poll_status() -> dict[str, Any]:
-    """Background-poller health for the dashboard header chip."""
+    """Background-poller health for the dashboard header chip.
+
+    The user's ``poll_interval_seconds`` preference is a *minimum* gap — the
+    actual upper bound is set by the launchd ``StartInterval`` (the daemon
+    tick). If the user picks a 10-minute interval but the daemon only fires
+    every 30 minutes, fresh data won't appear more often than 30 minutes,
+    even though ``_interval_elapsed()`` is satisfied long before that. Stale
+    detection has to use ``max(user_interval, daemon_tick)`` or the chip
+    flips yellow prematurely and reports a non-bug — which is exactly the
+    "background updater not running?" feedback we keep getting.
+    """
     last = mr_settings.get_last_poll_at()
     interval = mr_settings.get_poll_interval_seconds()
+    daemon_tick = mr_settings.daemon_tick_seconds()
+    effective_period = max(interval, daemon_tick)
     age_seconds: int | None = None
+    last_poll_local: str | None = None
     if last:
         try:
             last_dt = datetime.fromisoformat(last)
             now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
             age_seconds = max(0, int((now - last_dt).total_seconds()))
+            # Render an absolute local time so the user can verify the chip
+            # without hovering for the tooltip.
+            local_dt = last_dt.astimezone() if last_dt.tzinfo else last_dt
+            last_poll_local = local_dt.strftime("%-I:%M %p")
         except ValueError:
             age_seconds = None
-    # Stale = haven't heard from the poller within the configured interval plus
-    # a 60-second grace period (avoids a single-second flap right at the edge).
-    # Flags a dead launchd daemon, a crashed poll script, or an unset
+    # Stale = haven't heard from the poller within the effective period plus
+    # a 60-second grace window (avoids a single-second flap right at the
+    # edge). Flags a dead launchd daemon, a crashed poll script, or an unset
     # MAILROOM_DB path on the daemon side.
-    stale = age_seconds is None or age_seconds > interval + 60
+    stale = age_seconds is None or age_seconds > effective_period + 60
     return {
         "last_poll_at": last,
+        "last_poll_local": last_poll_local,
         "age_seconds": age_seconds,
         "interval_seconds": interval,
+        "daemon_tick_seconds": daemon_tick,
+        "effective_period_seconds": effective_period,
         "stale": stale,
     }
 

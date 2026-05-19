@@ -1,29 +1,46 @@
 {# Background-poller health chip in the dashboard header.
    hx-swap-oob: emitted by /settings/poll_interval so the header re-renders
-   when the user edits the frequency, without reloading the table. #}
+   when the user edits the frequency, without reloading the table.
+
+   The chip shows both the *relative* age ("5m ago") and the *absolute*
+   local clock time of the last successful poll. Users kept asking "is the
+   background updater actually running?" because the relative number alone
+   doesn't tell you whether the chip itself has gone stale — having the
+   wall-clock time inline makes the answer unambiguous. #}
 <div id="poll-status" hx-swap-oob="true"
      hx-get="/poll_status" hx-trigger="every 30s" hx-swap="outerHTML"
      class="flex items-center gap-2 text-xs text-base-content/60">
   {% set ps = poll_status %}
+  {% set tip_last = 'Last poll: ' ~ (ps.last_poll_local or 'never') %}
+  {% set tip_min = 'Min gap: ' ~ (ps.interval_seconds // 60) ~ 'm' %}
+  {% set tip_tick = 'Daemon fires every ' ~ (ps.daemon_tick_seconds // 60) ~ 'm' %}
+  {% set tip = tip_last ~ ' · ' ~ tip_min ~ ' · ' ~ tip_tick %}
   {% if ps.stale %}
-    <span class="badge badge-warning badge-sm gap-1" title="Last successful poll: {{ ps.last_poll_at or 'never' }}">
+    <span class="badge badge-warning badge-sm gap-1" title="{{ tip }}">
       <span class="w-1.5 h-1.5 rounded-full bg-warning-content/70"></span>
-      Background updates stale
+      {%- if ps.last_poll_local %}
+        No update since {{ ps.last_poll_local }}
+      {%- else %}
+        Background updater hasn't run yet
+      {%- endif %}
     </span>
   {% else %}
-    <span class="badge badge-ghost badge-sm gap-1" title="Last successful poll: {{ ps.last_poll_at }}">
+    <span class="badge badge-ghost badge-sm gap-1" title="{{ tip }}">
       <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
       Updated
       {%- if ps.age_seconds is not none %}
-        {% if ps.age_seconds < 60 %} just now
-        {% elif ps.age_seconds < 3600 %} {{ (ps.age_seconds // 60) }}m ago
-        {% else %} {{ (ps.age_seconds // 3600) }}h ago
-        {% endif %}
+        {%- if ps.age_seconds < 60 %} just now
+        {%- elif ps.age_seconds < 3600 %} {{ (ps.age_seconds // 60) }}m ago
+        {%- else %} {{ (ps.age_seconds // 3600) }}h ago
+        {%- endif %}
+      {%- endif %}
+      {%- if ps.last_poll_local %}
+        (at {{ ps.last_poll_local }})
       {%- endif %}
     </span>
   {% endif %}
   <button class="link link-hover" onclick="settings_modal.showModal()" type="button"
           title="Configure background-update interval">
-    every {{ (ps.interval_seconds // 60) }}m ⚙
+    every {{ (ps.effective_period_seconds // 60) }}m ⚙
   </button>
 </div>

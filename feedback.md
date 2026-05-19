@@ -39,7 +39,7 @@
 - [x] **2026-05-12 08:55 — Bug: Updated flag does not turn yellow**
   Updated ticker increases when Mailroom is open but doesn't automatically turn yellow when exceeding the timer
   _tool: procurement-tracker · source: http://localhost:47821/_
-- [ ] **2026-05-14 12:40 — Bug: Background updater not running**
+- [x] **2026-05-14 12:40 — Bug: Background updater not running**
   Not clear to me if background updates are not running or if the GUI just isn't updating? Sometimes taking longer than the 30min time to get notifications of updates
   _tool: procurement-tracker · source: http://localhost:47821/_
 - [ ] **2026-05-18 08:39 — Bug: Protolabs orders not parsing correctly**
