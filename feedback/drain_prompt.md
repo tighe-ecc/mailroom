@@ -8,7 +8,7 @@ run — operate autonomously, fail loudly into the log, and stop cleanly.
 
 Before doing anything else, load the conventions from this project:
 
-- Read `CLAUDE.md` (if present) and `feedback.md` at the repo root.
+- Read `CLAUDE.md` (if present) and `feedback/feedback.md`.
 - Read the user's global instructions if accessible; they own things like
   "no `Co-Authored-By: Claude` trailers" and "tighe@eightcoast.com is the
   personal git identity."
@@ -18,14 +18,14 @@ Do not change git config. Do not run `git config user.*`.
 
 ## Goal
 
-Drain UNCHECKED feedback items from `feedback.md` (the `- [ ]` ones) into
+Drain UNCHECKED feedback items from `feedback/feedback.md` (the `- [ ]` ones) into
 draft PRs, one per actionable item. Do not touch already-resolved items
 (`- [x]`). The human marks items resolved after merging your PR — never do
 that yourself.
 
 ## Procedure
 
-1. **Read `feedback.md`.** Parse the list. Keep only entries that start with
+1. **Read `feedback/feedback.md`.** Parse the list. Keep only entries that start with
    `- [ ]`. Each entry has a header line like
    `**YYYY-MM-DD HH:MM — Bug: <title>**` followed by a body and optional meta
    line. Record the header verbatim per item; you'll cite it in PR bodies so
@@ -76,9 +76,9 @@ that yourself.
        chip**`) so the human can grep for the originating row.
      - Test plan section listing what you ran and what you verified.
 
-5. **Do not modify `feedback.md`.** Specifically: do not flip `- [ ]` to
+5. **Do not modify `feedback/feedback.md`.** Specifically: do not flip `- [ ]` to
    `- [x]`. The human owns the resolved bit; they flip it after merging the
-   PR. If you accidentally edit feedback.md, revert it before committing.
+   PR. If you accidentally edit feedback/feedback.md, revert it before committing.
 
 ## Hard constraints
 
