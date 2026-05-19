@@ -142,6 +142,48 @@ def _header_date(raw: str | None) -> str | None:
     return dt.date().isoformat()
 
 
+# Sender-domain suffixes that indicate the email came from a carrier, not from
+# the order vendor. Used to gate the vendor/sender_domain overwrite in _apply:
+# a UPS "delivery notification" arrives with From: pkginfo@ups.com — we want
+# its tracking events on the existing row, not for it to relabel the order
+# "UPS". This is carrier-aware data, not per-vendor hardcoding; the carrier
+# universe is small and stable.
+_CARRIER_SENDER_DOMAINS = frozenset({
+    "ups.com",
+    "fedex.com",
+    "usps.com",
+    "dhl.com",
+    "ontrac.com",
+})
+
+
+def _is_carrier_notification(
+    parsed: parser.ParsedEmail, sender_domain: str | None
+) -> bool:
+    """True if this email is a carrier-side notification (shipping update,
+    delivery confirmation) rather than an order-vendor email.
+
+    Two signals; either fires:
+      1. The parser extracted the same string for ``vendor`` and ``carrier``.
+         Vendor-agnostic and the strongest signal — if the LLM thinks the
+         "vendor" of this email is the carrier itself, it's a carrier email.
+      2. The sender_domain matches a known-carrier domain suffix.
+
+    Callers use this to preserve the existing row's vendor/sender_domain
+    instead of letting a downstream UPS notification overwrite "Futek".
+    """
+    v = (parsed.vendor or "").strip().casefold()
+    c = (parsed.carrier or "").strip().casefold()
+    if v and c and v == c:
+        return True
+    if sender_domain:
+        host = sender_domain.lower().strip()
+        for suffix in _CARRIER_SENDER_DOMAINS:
+            if host == suffix or host.endswith("." + suffix):
+                return True
+    return False
+
+
 def _apply(
     parsed: parser.ParsedEmail,
     sender_domain: str | None = None,
@@ -197,12 +239,22 @@ def _apply(
         # status="delivered" with status="confirmed".)
         if db.is_status_regression(old_status, status):
             status = None
+        # Carrier notifications (UPS Delivery Notification, FedEx tracking
+        # email, etc.) are authoritative for tracking state but NOT for the
+        # order's vendor identity. Preserve the existing row's vendor +
+        # sender_domain when the inbound email comes from a carrier.
+        if _is_carrier_notification(parsed, sender_domain):
+            row_vendor = None
+            row_sender_domain = None
+        else:
+            row_vendor = parsed.vendor
+            row_sender_domain = sender_domain
         db.update_package(
             row_id=row_id,
             tracking_number=parsed.tracking_number,
             order_number=parsed.order_number,
             description=parsed.item_description,
-            vendor=parsed.vendor,
+            vendor=row_vendor,
             po_number=parsed.po_number,
             carrier=carrier,
             easypost_id=easypost_id,
@@ -211,7 +263,7 @@ def _apply(
             promised_ship_date=parsed.promised_ship_date,
             promised_delivery_date=promised_delivery_date,
             tracking_url=parsed.tracking_url,
-            sender_domain=sender_domain,
+            sender_domain=row_sender_domain,
         )
         action = "updated"
     else:
