@@ -139,12 +139,20 @@ class PollIntervalGateTests(unittest.TestCase):
 
 
 class PollStatusStalenessTests(unittest.TestCase):
-    """Unit tests for the _poll_status() stale-flag logic in app.py."""
+    """Unit tests for the _poll_status() stale-flag logic in app.py.
+
+    Staleness is gated by the *effective* polling period, which is the
+    max of the user's configured min-gap and the launchd daemon tick.
+    Tests pin MAILROOM_POLL_TICK so the daemon-tick contribution is
+    deterministic regardless of the local environment.
+    """
 
     def setUp(self) -> None:
         self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
         self._tmp.close()
         os.environ["MAILROOM_DB"] = self._tmp.name
+        # Pin the daemon tick to 60s so user interval dominates in these tests.
+        os.environ["MAILROOM_POLL_TICK"] = "60"
 
     def tearDown(self) -> None:
         from mailroom import settings
@@ -152,6 +160,7 @@ class PollStatusStalenessTests(unittest.TestCase):
         Path(self._tmp.name).unlink(missing_ok=True)
         settings.settings_path().unlink(missing_ok=True)
         os.environ.pop("MAILROOM_DB", None)
+        os.environ.pop("MAILROOM_POLL_TICK", None)
 
     def _poll_status(self):
         # Import lazily so MAILROOM_DB env var is set first.
@@ -163,6 +172,7 @@ class PollStatusStalenessTests(unittest.TestCase):
     def test_stale_when_no_poll_recorded(self):
         ps = self._poll_status()
         self.assertTrue(ps["stale"])
+        self.assertIsNone(ps["last_poll_local"])
 
     def test_not_stale_within_interval(self):
         from mailroom import settings
@@ -171,11 +181,13 @@ class PollStatusStalenessTests(unittest.TestCase):
         settings.record_poll_at(recent)
         ps = self._poll_status()
         self.assertFalse(ps["stale"])
+        # The absolute clock time of the last poll should be rendered.
+        self.assertIsNotNone(ps["last_poll_local"])
 
     def test_stale_once_interval_exceeded(self):
         from mailroom import settings
         settings.set_poll_interval_seconds(600)
-        # 600 s interval + 60 s grace = stale at 661 s
+        # 600 s interval + 60 s grace = stale at 661 s (daemon tick pinned to 60).
         old = (datetime.now(timezone.utc) - timedelta(seconds=661)).isoformat()
         settings.record_poll_at(old)
         ps = self._poll_status()
@@ -189,6 +201,33 @@ class PollStatusStalenessTests(unittest.TestCase):
         settings.record_poll_at(edge)
         ps = self._poll_status()
         self.assertFalse(ps["stale"])
+
+    def test_daemon_tick_dominates_when_larger_than_user_interval(self):
+        """User picked 10m, but launchd only fires every 30m. The chip
+        must stay green until 30m + 60s grace has passed, otherwise it
+        prematurely cries wolf about a working background updater."""
+        from mailroom import settings
+        os.environ["MAILROOM_POLL_TICK"] = "1800"  # 30 minutes
+        settings.set_poll_interval_seconds(600)    # user picked 10 minutes
+        # 15 minutes ago — past the user's 10m min, but well inside the 30m daemon tick.
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=900)).isoformat()
+        settings.record_poll_at(recent)
+        ps = self._poll_status()
+        self.assertFalse(ps["stale"])
+        self.assertEqual(ps["effective_period_seconds"], 1800)
+
+    def test_user_interval_dominates_when_larger_than_daemon_tick(self):
+        """User picked 60m, daemon fires every 30m. Polls only happen
+        every 60m, so the chip should respect that."""
+        from mailroom import settings
+        os.environ["MAILROOM_POLL_TICK"] = "1800"  # 30 minutes
+        settings.set_poll_interval_seconds(3600)   # user picked 60 minutes
+        # 45 minutes ago — past the daemon tick, but still inside the user's min-gap.
+        recent = (datetime.now(timezone.utc) - timedelta(seconds=2700)).isoformat()
+        settings.record_poll_at(recent)
+        ps = self._poll_status()
+        self.assertFalse(ps["stale"])
+        self.assertEqual(ps["effective_period_seconds"], 3600)
 
 
 if __name__ == "__main__":

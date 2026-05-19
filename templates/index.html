@@ -280,8 +280,9 @@
     <h3 class="text-lg font-semibold mb-1">Background updates</h3>
     <p class="text-sm text-base-content/60 mb-4">
       Mailroom polls EasyPost (and falls back to scraping carrier pages) in the background.
-      The launchd daemon fires every {{ (poll_status.interval_seconds // 60) }} minutes today;
-      lowering this value skips polls until the gap elapses again.
+      The launchd daemon fires every {{ (poll_status.daemon_tick_seconds // 60) }} minutes —
+      lowering the min-gap below that won't make polls fire more often, but raising it above
+      will skip polls until the gap elapses again.
     </p>
     <form hx-post="/settings/poll_interval"
           hx-target="#poll-status"
