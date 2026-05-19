@@ -215,6 +215,34 @@ def _git_sync_feedback() -> None:
         _FEEDBACK_LOG.warning("feedback git-sync error: %s", exc)
 
 
+def _find_claude_cli() -> str | None:
+    """Locate the ``claude`` CLI binary for the headless feedback agent.
+
+    The launchd-spawned FastAPI process gets a minimal PATH that typically
+    omits ``~/.local/bin`` where the Claude Code CLI installer drops the
+    binary. ``shutil.which('claude')`` alone returns None even though the
+    user's shell finds it fine. We extend the search with known install
+    locations and an env-var override so the kit works the same across
+    different user installs.
+
+    Order: MAILROOM_CLAUDE_BIN env var, shutil.which, then well-known paths.
+    """
+    override = os.environ.get("MAILROOM_CLAUDE_BIN")
+    if override and os.access(override, os.X_OK):
+        return override
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / ".local" / "bin" / "claude",
+        Path("/opt/homebrew/bin/claude"),
+        Path("/usr/local/bin/claude"),
+    ):
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
 def _expedite_pid_is_alive(pid: int) -> bool:
     """Best-effort liveness check via ``kill -0``."""
     if pid <= 0:
@@ -289,7 +317,7 @@ def _expedite_local() -> None:
     or an in-flight drain all log and return — they never raise back into
     the FastAPI request, which has already been queued to the client.
     """
-    claude_bin = shutil.which("claude")
+    claude_bin = _find_claude_cli()
     if not claude_bin:
         _FEEDBACK_LOG.warning(
             "expedite: 'claude' CLI not on PATH; skipping local agent spawn"

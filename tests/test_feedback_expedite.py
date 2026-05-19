@@ -60,7 +60,7 @@ class ExpediteLocalTests(unittest.TestCase):
         touching the lockfile or attempting to spawn anything. This is the
         common state on a freshly-cloned dev machine and must not break the
         /feedback endpoint."""
-        with patch.object(app.shutil, "which", return_value=None), \
+        with patch.object(app, "_find_claude_cli", return_value=None), \
              patch.object(app.subprocess, "Popen") as popen, \
              self.assertLogs(level="WARNING") as captured:
             app._expedite_local()
@@ -79,7 +79,7 @@ class ExpediteLocalTests(unittest.TestCase):
         clobbering the lockfile."""
         # Our own PID is guaranteed to be alive.
         self.lockfile.write_text(str(os.getpid()), encoding="utf-8")
-        with patch.object(app.shutil, "which", return_value="/usr/local/bin/claude"), \
+        with patch.object(app, "_find_claude_cli", return_value="/usr/local/bin/claude"), \
              patch.object(app.subprocess, "Popen") as popen, \
              self.assertLogs(level="INFO") as captured:
             app._expedite_local()
@@ -102,7 +102,7 @@ class ExpediteLocalTests(unittest.TestCase):
         # patch the liveness probe to confirm it as dead.
         self.lockfile.write_text("999999", encoding="utf-8")
         fake_proc = MagicMock(pid=4242)
-        with patch.object(app.shutil, "which", return_value="/usr/local/bin/claude"), \
+        with patch.object(app, "_find_claude_cli", return_value="/usr/local/bin/claude"), \
              patch.object(app, "_expedite_pid_is_alive", return_value=False), \
              patch.object(app.subprocess, "Popen", return_value=fake_proc) as popen:
             app._expedite_local()
@@ -117,7 +117,7 @@ class ExpediteLocalTests(unittest.TestCase):
         with --print --add-dir <repo> <prompt>, detached via
         start_new_session, stdin closed."""
         fake_proc = MagicMock(pid=12345)
-        with patch.object(app.shutil, "which", return_value="/usr/local/bin/claude"), \
+        with patch.object(app, "_find_claude_cli", return_value="/usr/local/bin/claude"), \
              patch.object(app.subprocess, "Popen", return_value=fake_proc) as popen:
             app._expedite_local()
 
