@@ -5,7 +5,15 @@ LABEL="com.tighe.mailroom.gui"
 SERVICE="gui/$(id -u)/${LABEL}"
 URL="http://127.0.0.1:47821/"
 
+# Backup poll agent — the GUI process now drives an in-process poll loop
+# (see app.py), but we still kick the launchd poll agent so its state isn't
+# left stuck after a `./restart`. Fire-and-forget: success is gated only on
+# the GUI URL coming back up.
+POLL_LABEL="com.tighe.mailroom.poll"
+POLL_SERVICE="gui/$(id -u)/${POLL_LABEL}"
+
 launchctl kickstart -k "${SERVICE}"
+launchctl kickstart -k "${POLL_SERVICE}" >/dev/null 2>&1 || true
 
 for _ in $(seq 1 20); do
     pid="$(launchctl list | awk -v l="${LABEL}" '$3 == l { print $1 }')"

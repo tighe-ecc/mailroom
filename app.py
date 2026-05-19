@@ -5,9 +5,11 @@ Run: .venv/bin/uvicorn app:app --host 127.0.0.1 --port 47821
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -80,13 +82,77 @@ templates.env.filters["display_status"] = easypost.display_status
 templates.env.filters["tracking_url_for"] = scrape.tracking_url_for
 
 
+# Brief delay before the in-process poller's first fire, so we don't compete
+# with uvicorn / the inbox watcher for startup CPU.
+_POLL_TASK_STARTUP_DELAY_SECONDS = 8
+
+
+async def _periodic_poll_loop() -> None:
+    """In-process poll driver — runs on every GUI start, ticks forever.
+
+    Why this exists: launchd's ``StartInterval`` on ``com.tighe.mailroom.poll``
+    is documented as best-effort, and in practice it silently drops fires
+    across sleep cycles, App Nap, and Low Power Mode. The dashboard chip then
+    goes "stale" even though the app is alive. We can't fix launchd, so we
+    route around it: as long as the GUI process is up, this task drives the
+    poller on the same cadence the plist *wants*.
+
+    The launchd agent stays installed as a backup — both callers share
+    ``poll._interval_elapsed()``, so they coexist without double-polling.
+    Whoever wakes up first runs the carrier poll; the other sees the gate
+    closed and skips it.
+    """
+    # Sleep a bit at startup so the first fire doesn't pile onto uvicorn's
+    # initial request handling. Use settings.daemon_tick_seconds() per-tick so
+    # changes to MAILROOM_POLL_TICK take effect on the next loop iteration
+    # without needing a GUI restart.
+    try:
+        await asyncio.sleep(_POLL_TASK_STARTUP_DELAY_SECONDS)
+        while True:
+            tick = mr_settings.daemon_tick_seconds()
+            started = time.monotonic()
+            logging.info("in-process poll tick start (interval=%ss)", tick)
+            try:
+                # Run synchronously off the event loop — poll_once() does
+                # blocking I/O (sqlite, HTTP) that would stall the GUI's
+                # request handlers if run inline. asyncio.to_thread() keeps
+                # the event loop responsive.
+                summary = await asyncio.to_thread(poll.poll_once)
+                elapsed = time.monotonic() - started
+                logging.info(
+                    "in-process poll tick done in %.2fs: %s", elapsed, summary
+                )
+            except Exception:
+                # One bad poll must not kill the task — log and keep ticking.
+                # The launchd agent is a secondary backstop if this loop ever
+                # silently wedges, but we don't want it to wedge here.
+                elapsed = time.monotonic() - started
+                logging.exception(
+                    "in-process poll tick failed after %.2fs", elapsed
+                )
+            await asyncio.sleep(tick)
+    except asyncio.CancelledError:
+        # Clean shutdown — lifespan is tearing down. Re-raise so the task is
+        # marked cancelled rather than completed.
+        logging.info("in-process poll task cancelled")
+        raise
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     db.init_schema()
     observer = watcher.start()
+    poll_task = asyncio.create_task(_periodic_poll_loop(), name="mailroom-poll")
     try:
         yield
     finally:
+        poll_task.cancel()
+        try:
+            await poll_task
+        except (asyncio.CancelledError, Exception):
+            # Cancellation is expected; any other exception was already logged
+            # by the loop itself. Don't let teardown raise.
+            pass
         watcher.stop(observer)
 
 
