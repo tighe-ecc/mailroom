@@ -57,3 +57,6 @@
 - [ ] **2026-05-19 07:09 — Feature: Indicate required fields and feedback card**
   Right now, it's not clear what is or isn't required in the feedback card. Indicate as such with the standard asterisk symbol.
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
+- [ ] **2026-05-20 15:22 — Bug: 125769125 tracking incorrect**
+  Wrong info coming in, says Delivered when actual status was that delivery was attempted and failed
+  _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
