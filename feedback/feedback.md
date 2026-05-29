@@ -48,15 +48,15 @@
 - [x] **2026-05-18 08:39 — Bug: Tracking link for Protolabs brings me to DigiKey instead of FedEx**
   Tracking number is valid
   _tool: procurement-tracker · source: http://localhost:47821/_
-- [ ] **2026-05-18 23:04 — Feature: Remove title from feedback form**
+- [x] **2026-05-18 23:04 — Feature: Remove title from feedback form**
   It doesn't make sense to me that we have the title and the description as required. Everything should just be optional to make it as easy as possible to give and receive feedback.
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
-- [ ] **2026-05-18 23:13 — Feature: Description should be optional.**
+- [x] **2026-05-18 23:13 — Feature: Description should be optional.**
   Shouldn't need to add a verbose description to collect feedback and have action on
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
-- [ ] **2026-05-19 07:09 — Feature: Indicate required fields and feedback card**
+- [x] **2026-05-19 07:09 — Feature: Indicate required fields and feedback card**
   Right now, it's not clear what is or isn't required in the feedback card. Indicate as such with the standard asterisk symbol.
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_
-- [ ] **2026-05-20 15:22 — Bug: 125769125 tracking incorrect**
+- [x] **2026-05-20 15:22 — Bug: 125769125 tracking incorrect**
   Wrong info coming in, says Delivered when actual status was that delivery was attempted and failed
   _tool: procurement-tracker · source: http://localhost:47821/ · expedited_

@@ -11,15 +11,45 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import db, easypost, inbox, notify, scrape, settings
 
 log = logging.getLogger(__name__)
 
 
-def _skip_status(status: str | None) -> bool:
-    return status in easypost.TERMINAL_STATUSES
+# Carriers (especially FedEx) sometimes mark a package "delivered" hours before
+# a failed-delivery / exception event lands, so we keep polling `delivered`
+# rows for a grace window after the last carrier event. `received` is set by
+# the user picking the package up and is always terminal.
+DELIVERED_REPOLL_WINDOW = timedelta(hours=72)
+
+
+def _parse_event_time(value: str | None) -> datetime | None:
+    # EasyPost passes through whatever ISO string the carrier sends; some events
+    # come back without a timezone suffix (FedEx scrape paths in particular).
+    # Treat naive as UTC so the caller can subtract from datetime.now(timezone.utc).
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _skip_pkg(pkg: dict) -> bool:
+    status = pkg.get("status")
+    if status not in easypost.TERMINAL_STATUSES:
+        return False
+    if status != "delivered":
+        return True
+    last = _parse_event_time(pkg.get("last_event_time"))
+    if last is None:
+        return True
+    return datetime.now(timezone.utc) - last >= DELIVERED_REPOLL_WINDOW
 
 
 def _interval_elapsed() -> bool:
@@ -94,7 +124,7 @@ def poll_once(force: bool = False) -> dict[str, int]:
     carrier_summary = {"checked": 0, "updated": 0, "notified": 0, "errors": 0}
 
     for pkg in packages:
-        if _skip_status(pkg.get("status")):
+        if _skip_pkg(pkg):
             continue
 
         # Need at least one source of tracking info; otherwise nothing to do.
