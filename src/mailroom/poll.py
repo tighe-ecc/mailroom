@@ -26,12 +26,18 @@ DELIVERED_REPOLL_WINDOW = timedelta(hours=72)
 
 
 def _parse_event_time(value: str | None) -> datetime | None:
+    # EasyPost passes through whatever ISO string the carrier sends; some events
+    # come back without a timezone suffix (FedEx scrape paths in particular).
+    # Treat naive as UTC so the caller can subtract from datetime.now(timezone.utc).
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _skip_pkg(pkg: dict) -> bool:

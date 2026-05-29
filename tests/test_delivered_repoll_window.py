@@ -48,6 +48,18 @@ class SkipPkgTests(unittest.TestCase):
             "last_event_time": _iso(old),
         }))
 
+    def test_delivered_with_naive_event_time_assumes_utc(self):
+        # Regression: some EasyPost events come back without a timezone suffix
+        # (e.g. "2026-05-27T17:40:00"). _skip_pkg used to crash with
+        # "can't subtract offset-naive and offset-aware datetimes".
+        recent_naive = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        self.assertFalse(poll._skip_pkg({
+            "status": "delivered",
+            "last_event_time": recent_naive,
+        }))
+
     def test_delivered_without_event_time_is_skipped(self):
         # No timestamp means we can't tell how stale it is — fall back to the
         # old behavior of treating delivered as terminal so we don't churn.
